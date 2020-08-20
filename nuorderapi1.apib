@@ -1,0 +1,5446 @@
+FORMAT: 1A
+HOST: https://nuorder.com
+
+# NuORDER API
+
+## HTTP Status codes
+
+The NuORDER API uses [HTTP status codes](https://en.wikipedia.org/wiki/List_of_HTTP_status_codes) as a way to quickly indicate to the consumer whether or not a request was successful, what type of action was performed, and what type of errors occurred (if any).
+
+The most commonly used codes in the API are:
+
+**2xx => success**
+
+* 200 - OK
+* 201 - Created
+
+**4xx => client / request errors**
+
+* 400 - Bad Arguments - this error will be accompanied by a message with more information
+* 401 - Unauthorized - user does not have access (this is likely an OAuth header issue)
+* 403 - Forbidden - user does not have access to do what they are trying to do
+* 404 - Not Found - the resource requested was not found
+* 409 - Conflict - the resource provided to create conflicts with another document already stored
+
+Error response body usually looks like:
+
+```
+{
+    code: 4xx
+    message: 'A short error description'
+}
+```
+
+## Custom fields
+
+NuORDER uses fluent schemas for products, orders, company. So these entities may contain custom fields in responses, and such fields could be updated in request body.
+
+
+# Code samples
+
+## Node.js
+
+### Service class
+Here is a example of a service class
+
+```
+const crypto = require('crypto');
+const requestPromise = require('request-promise');
+const fs = require('fs');
+
+class NuORDERApiWrapper {
+    constructor (options) {
+        this.consumer_key = options.consumer_key;
+        this.consumer_secret_key = options.consumer_secret_key;
+        this.token = options.token;
+        this.token_secret = options.token_secret;
+        this.version = '1.0';
+        this.algorithm = 'HMAC-SHA1';
+        this.domain = options.domain;
+    }
+
+    getAuthorizationHeader(options) {
+        var timestamp = Math.floor(+new Date() / 1000);
+        var nonce = this.generateNonce();
+
+        var headers = 'OAuth oauth_consumer_key="' + this.consumer_key + '",' +
+            'oauth_timestamp="' + timestamp + '",' +
+            'oauth_nonce="' + nonce + '",' +
+            'oauth_version="' + this.version + '",' +
+            'oauth_signature_method="' + this.algorithm + '",' +
+            'oauth_token="' + this.token + '",' +
+            'oauth_signature="' + this.createSignature(options, timestamp, nonce) + '"';
+
+        if (options.callback) {
+            headers = `${headers},oauth_callback="${options.callback}",application_name="${options.application_name}"`;
+        }
+
+        if (options.verifier) {
+            headers = `${headers},oauth_verifier="${options.verifier}"`;
+        }
+
+        return headers;
+    }
+
+    createSignature(options, timestamp, nonce) {
+        var string =
+            options.method.toUpperCase() +
+            encodeURI(options.url) +
+            "?oauth_consumer_key=" + this.consumer_key + "&" +
+            "oauth_token=" + this.token + "&" +
+            "oauth_timestamp=" + timestamp + "&" +
+            "oauth_nonce=" + nonce + "&" +
+            "oauth_version=" + this.version + "&" +
+            "oauth_signature_method=" + this.algorithm;
+
+        if (options.callback) {
+            string = `${string}&oauth_callback=${options.callback}`;
+        }
+
+        if (options.verifier) {
+            string = `${string}&oauth_verifier=${options.verifier}`;
+        }
+
+        return this.generateSignature(this.consumer_secret_key + '&' + this.token_secret, string);
+    }
+
+    generateNonce() {
+        var keylist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        var nonce = '';
+
+        for (var i = 0; i < 16; i++) {
+            nonce = nonce + keylist[Math.floor(Math.random() * keylist.length)];
+        }
+
+        return nonce;
+    }
+
+    generateSignature(key, text) {
+        return crypto.createHmac('sha1', key).update(text).digest('hex');
+    }
+
+    request(opts) {
+        const {
+            url,
+            method = 'GET',
+            body = {}
+        } = opts;
+
+        const options = Object.assign({
+            url: `https://${this.domain}${url}`,
+            method,
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            json: true
+        }, body);
+
+        if (body) {
+            options.body = body;
+        }
+
+        options.headers.Authorization = this.getAuthorizationHeader(options);
+
+        return requestPromise(options);
+    }
+}
+
+module.exports = NuORDERApiWrapper;
+
+```
+
+note that this class uses 2 additional libraries - `crypto` and `request-promise`. In order to install them you need to run:
+```
+npm install -g request-propmise crypto
+```
+
+### 1. Initiate request
+```
+const config = {
+    consumer_key: '',        // Retrieve this value from NuORDER > Admin > API Management
+    consumer_secret_key: '', // Retrieve this value from NuORDER > Admin > API Management
+    token: '',               // will be blank for this call
+    token_secret: '',        // will be blank for this call
+    version: '1.0',
+    algorithm: 'HMAC-SHA1',
+    domain: 'next.nuorder.com' //NuORDER api server
+};
+
+const NuORDERApi = new NuORDERApiWrapper(config);
+
+NuORDERApi.request({
+    url: '/api/initiate',
+    body: {
+        application_name: 'my-awesome-app',
+        callback: 'oob'
+    }
+})
+.then( data => {
+    // `data` here is something like
+    // {
+    //    "oauth_token": "k53u9GSydTg2UzD4",
+    //    "oauth_token_secret": "ScmSTbxBwuqaVJnFgSWBJTXn",
+    //    "oauth_callback_confirmed": true
+    // }
+    console.log( `${JSON.stringify(data, null, 4)}`)
+} )
+.catch( (err) => {
+    console.error(`An error occured ${err.message}`)
+})
+// do something with response, it includes your temporary token and secret for the next token call
+```
+### 2. Token request
+
+At this point you are able to see your application (`my-awesome-app` in case you've used this guide name) in NuORDER > Admin > API Management. Click on `APPROVE` button, and you'll see a popup with verifier code. Next do a next request:
+
+```
+const config = {
+    consumer_key: '',        // Retrieve this value from NuORDER > Admin > API Management
+    consumer_secret_key: '', // Retrieve this value from NuORDER > Admin > API Management
+    token: '',               // Your temp token will be in the initiate response body OR you can get it from NuORDER > Admin > API Management
+    token_secret: '',        // Your temp token will be in the initiate response body OR you can get it from NuORDER > Admin > API Management
+    version: '1.0',
+    algorithm: 'HMAC-SHA1',
+    domain: 'staging.nuorder.com' //NuORDER api server
+};
+
+const NuORDERApi = new NuORDERApiWrapper(config);
+
+NuORDERApi.request({
+    url: '/api/token',
+    body: {
+        verifier: 'SPhxFUHGqbCYSdt2' // Retrieve this value from NuORDER > Admin > API Management > APPROVE
+    }
+})
+.then( data => {
+    // `data` here is something like
+    // {
+    //    "oauth_token": "GVxrNWmKvV3F8DTD4p5cvBT6",
+    //    "oauth_token_secret": "eFTsRZgPXkEheVRqTchdfnM8CWKzbgKWcKYtEhbcE47rB8RhRVSZBwYuFy2mFun5"
+    // }
+    console.log( `${JSON.stringify(data, null, 4)}`)
+} )
+.catch( (err) => {
+    console.error(`An error occured ${err.message}`)
+})
+```
+ That's your permant tokens. In case you forget it, you can always found token and token secret in NuORDER > Admin > API Management.
+ AT THIS POINT YOU HAVE FULL ACCESS TO YOUR API'S.. HERE IS ONE EXAMPLE CALL YOU CAN NOW MAKE
+
+### 3. Get Pending Orders Example
+
+```
+const NuORDERApiWrapper = require('./NuORDERApiWrapper');
+
+const config = {
+    consumer_key: '',        // Retrieve this value from NuORDER > Admin > API Management
+    consumer_secret_key: '', // Retrieve this value from NuORDER > Admin > API Management
+    token: '',               // Retrieve this value from NuORDER > Admin > API Management, or the token response body
+    token_secret: '',        // Retrieve this value from NuORDER > Admin > API Management, or the token response body
+    version: '1.0',
+    algorithm: 'HMAC-SHA1',
+    domain: 'staging.nuorder.com' //NuORDER api server
+};
+
+const NuORDERApi = new NuORDERApiWrapper(config);
+
+NuORDERApi.request({
+    url: '/api/orders/pending/detail'
+})
+.then( data => {
+    // `data` here is your pending orders list
+    console.log( `${JSON.stringify(data, null, 4)}`)
+} )
+.catch( (err) => {
+    console.error(`An error occured ${err.message}`)
+})
+```
+
+## C#
+
+### Service class
+Here is an example util class you can use:
+```
+public class NuOrderConfig
+{
+    public string ConsumerKey { get; set; }
+    public string ConsumerSecret { get; set; }
+    public string Token { get; set; }
+    public string TokenSecret { get; set; }
+    public string Version { get; set; }
+    public string SignatureMethod { get; set; }
+}
+
+/* web service wrapper */
+
+public class NuOrderWebService
+{
+    private NuOrderConfig Configuration;
+
+    public string Timestamp { get; set; }
+    public string Nonce { get; set; }
+    public string Signature { get; set; }
+
+    public string Callback { get; set; }
+    public string ApplicationName { get; set; }
+    public string VerificationCode { get; set; }
+
+    private bool IsInitRequest;
+    private bool IsVerifyRequest;
+
+    public NuOrderWebService(NuOrderConfig Configuration)
+    {
+        this.Configuration = Configuration;
+    }
+
+    /* PUBLIC METHODS */
+
+    public HttpWebResponse ExecuteRequest(string RequestMethod, string EndPoint)
+    {
+        return ExecuteRequest(RequestMethod, EndPoint, null);
+    }
+
+    public HttpWebResponse ExecuteRequest(string RequestMethod, string EndPoint, string Data)
+    {
+        try
+        {
+            this.Nonce = GenerateNonce();
+            this.Timestamp = GenerateTimestamp().ToString();
+            this.Signature = GenerateSignature(RequestMethod, EndPoint);
+
+            HttpWebRequest req = (HttpWebRequest) HttpWebRequest.Create(EndPoint);
+
+            string authorizationHeader = "OAuth ";
+            foreach (var header in GetRequestHeaders())
+                authorizationHeader += header.Key + "=\"" + header.Value + "\",";
+            authorizationHeader = authorizationHeader.Substring(0, authorizationHeader.Length - 1);
+            req.Headers.Add(HttpRequestHeader.Authorization, authorizationHeader);
+            req.Method = RequestMethod;
+
+            if ((RequestMethod == "POST" || RequestMethod == "PUT") && Data != null)
+            {
+                req.ContentType = "application/json";
+
+                using (StreamWriter writer = new StreamWriter(req.GetRequestStream()))
+                {
+                    writer.Write(Data);
+                }
+            }
+
+            HttpWebResponse response = (HttpWebResponse) req.GetResponse();
+
+            return response;
+        }
+        catch (WebException ex)
+        {
+            // catch error here -- note the response code (i.e. 401, 404, 409, etc) and the response body for more information
+
+            return null;
+        }
+    }
+
+    public void SetInitRequest(string ApplicationName, string Callback)
+    {
+        this.IsInitRequest = true;
+        this.ApplicationName = ApplicationName;
+        this.Callback = Callback;
+    }
+
+    public void SetVerifyRequest(string VerificationCode)
+    {
+        this.IsVerifyRequest = true;
+        this.VerificationCode = VerificationCode;
+    }
+
+    /* SUPPORT METHODS */
+
+    private Dictionary<string, string> GetRequestHeaders()
+    {
+        Dictionary<string, string> headers = new Dictionary<string, string>();
+        headers.Add("oauth_token", Configuration.Token);
+        headers.Add("oauth_consumer_key", Configuration.ConsumerKey);
+        headers.Add("oauth_timestamp", Timestamp);
+        headers.Add("oauth_nonce", Nonce);
+        headers.Add("oauth_version", Configuration.Version);
+        headers.Add("oauth_signature_method", Configuration.SignatureMethod);
+        headers.Add("oauth_signature", Signature);
+
+        if (IsInitRequest)
+        {
+            headers.Add("oauth_callback", Callback);
+            headers.Add("application_name", ApplicationName);
+        }
+
+        if (IsVerifyRequest)
+            headers.Add("oauth_verifier", VerificationCode);
+
+        return headers;
+    }
+
+    private Random rnd = new Random();
+    private const string _characters =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+    private string GenerateNonce()
+    {
+        char[] buffer = new char[16];
+        for (int i = 0; i < 16; i++)
+            buffer[i] = _characters[rnd.Next(_characters.Length)];
+        return new string(buffer);
+    }
+
+    private int GenerateTimestamp()
+    {
+        TimeSpan span = DateTime.UtcNow.Subtract(new DateTime(1970, 1, 1, 0, 0, 0));
+        return Convert.ToInt32(span.TotalSeconds);
+    }
+
+    private string GenerateSignature(string RequestMethod, string EndPoint)
+    {
+        string baseSignatureString = RequestMethod + EndPoint +
+            "?oauth_consumer_key=" + Configuration.ConsumerKey + "&" +
+            "oauth_token=" + Configuration.Token + "&" +
+            "oauth_timestamp=" + Timestamp + "&" +
+            "oauth_nonce=" + Nonce + "&" +
+            "oauth_version=" + Configuration.Version + "&" +
+            "oauth_signature_method=" + Configuration.SignatureMethod;
+
+        if (IsInitRequest) baseSignatureString += "&oauth_callback=" + Callback;
+        if (IsVerifyRequest) baseSignatureString += "&oauth_verifier=" + VerificationCode;
+
+        string key = Configuration.ConsumerSecret + "&" + Configuration.TokenSecret;
+
+        return GenerateSHA1Hash(key, baseSignatureString);
+    }
+
+    private string GenerateSHA1Hash(string key, string value)
+    {
+        byte[] keyBytes = ConvertStringToByteArray(key);
+        byte[] valueBytes = ConvertStringToByteArray(value);
+        byte[] hash = null;
+        using (HMACSHA1 hmac = new HMACSHA1(keyBytes))
+        {
+            hash = hmac.ComputeHash(valueBytes);
+        }
+        return ConvertByteArrayToHexString(hash);
+    }
+
+    private byte[] ConvertStringToByteArray(string str)
+    {
+        return System.Text.Encoding.ASCII.GetBytes(str);
+    }
+
+    private string ConvertByteArrayToHexString(byte[] bytes)
+    {
+        StringBuilder hex = new StringBuilder(bytes.Length * 2);
+        foreach (byte b in bytes)
+            hex.AppendFormat("{0:x2}", b);
+        return hex.ToString();
+    }
+}
+```
+
+### 1. Initiate request
+```
+NuOrderConfig config = new NuOrderConfig();
+config.ConsumerKey = "";    // Retrieve this value from NuORDER > Admin > API Management
+config.ConsumerSecret = ""; // Retrieve this value from NuORDER > Admin > API Management
+config.Token = "";          // will be blank for this call
+config.TokenSecret = "";    // will be blank for this call
+config.Version = "1.0";
+config.SignatureMethod = "HMAC-SHA1";
+
+NuOrderWebService ws = new NuOrderWebService(config);
+
+ws.SetInitRequest("application_name", "oob");
+
+HttpWebResponse response = ws.ExecuteRequest("GET", "https://sandbox1.nuorder.com/api/initiate");
+
+// do something with response, it includes your temporary token and secret for the next token call
+
+```
+
+### 2. Token request
+```
+NuOrderConfig config = new NuOrderConfig();
+config.ConsumerKey = "";    // Retrieve this value from NuORDER > Admin > API Management
+config.ConsumerSecret = ""; // Retrieve this value from NuORDER > Admin > API Management
+config.Token = "";          // Your temp token will be in the initiate response body OR you can get it from NuORDER > Admin > API Management
+config.TokenSecret = "";    // Your temp token will be in the initiate response body OR you can get it from NuORDER > Admin > API Management
+config.Version = "1.0";
+config.SignatureMethod = "HMAC-SHA1";
+
+NuOrderWebService ws = new NuOrderWebService(config);
+
+ws.SetVerifyRequest("oauth_verifier"); // get this value from NuORDER > Admin > API Management, it will not be included in the original response
+
+HttpWebResponse response = ws.ExecuteRequest("GET", "https://sandbox1.nuorder.com/api/token");
+
+// do something with response, it includes your final token and token secret for all subsequent calls
+```
+
+AT THIS POINT YOU HAVE FULL ACCESS TO OUR API'S.. HERE IS ONE EXAMPLE CALL YOU CAN NOW MAKE
+
+### 3. Get Pending Orders Example
+```
+NuOrderConfig config = new NuOrderConfig();
+config.ConsumerKey = "";    // Retrieve this value from NuORDER > Admin > API Management
+config.ConsumerSecret = ""; // Retrieve this value from NuORDER > Admin > API Management
+config.Token = "";          // Retrieve this value from NuORDER > Admin > API Management, or the token response body
+config.TokenSecret = "";    // Retrieve this value from NuORDER > Admin > API Management, or the token response body
+config.Version = "1.0";
+config.SignatureMethod = "HMAC-SHA1";
+
+NuOrderWebService ws = new NuOrderWebService(config);
+
+string url = "https://sandbox1.nuorder.com/api/orders/pending/detail";
+HttpWebResponse response = ws.ExecuteRequest("GET", url);
+
+// the response will be a JSON array of orders
+```
+
+## Authentication [/api]
+
+NuORDER uses OAuth 1.0 as the authentication scheme. Please follow these steps to generate your permanent tokens that are required to make all API calls.
+
+1. Make a call to **/api/initiate** to generate temporary tokens
+2. Make a call to **/api/token** to generate permanent tokens
+
+OAuth 1.0 is comprised of two main elements:
+
+* A signature
+* An authorization header
+
+**Signature Required Properties**
+
+* method_type `GET` (string) - The HTTP method
+* url `https://nuorder.com/api/initiate` (string) - The URL
+* oauth_consumer_key `YUb6RBRsd8cH5KNW44UeXmat` - Consumer Key (Admin => API Management)
+* oauth_token `NTwm2VaY5kJjtBuQJXRTBACK` - Token (Admin => API Management)
+* oauth_timestamp `1488918667` - Timestamp
+* oauth_nonce `Mevx8gQQ3pzmkdXq` - Nonce (16 characters)
+* oauth_version `1.0` - OAuth Version (1.0 only)
+* oauth_signature_method `HMAC-SHA1` - Signature method (HMAC-SHA1 is the only signature method NuORDER supports)
+
+**Signature Properties that are sometimes required**
+
+* /api/initiate
+    * oauth_callback `http://yourservice.com` - The callback URL (or `oob` if you want to manually approve the application)
+* /api/token
+    * oauth_verifier `XSyGUc3HRKU6cfKD` - The verifier code, you can get it from `Admin` -> `API Management` when click on `APPROVE` button
+
+**Example base string (note: order matters)**
+
+```
+GEThttps://nuorder.com/api/initiate?oauth_consumer_key=YUb6RBRsd8cH5KNW44UeXmat&oauth_token=&oauth_timestamp=1488918667&oauth_nonce=Mevx8gQQ3pzmkdXq&oauth_version=1.0&oauth_signature_method=HMAC-SHA1&oauth_callback=oob
+```
+
+**Generating the signature**
+
+In order to generate your signature you will need your `consumer_secret_key` and `token_secret`, which will act as the key when generating the signature.
+
+The key is `consumer_secret_key` + `&` + `token_secret`.
+
+Example:
+
+```
+pFwRJnYWTFqhdnXHSy7xr5pzEjdzfbY5qb2mnBK5yxMPp2Q7buw5uRYkK4NRHvZM&ZCehSTY27v38we5awpJeqjD4dNyRCduJjcbrXSxKRUekrvzecP5X7fvnhGcJn93d
+```
+
+Example for `/api/initiate` when there is no token_secret yet (note the `&` is still present):
+
+```
+pFwRJnYWTFqhdnXHSy7xr5pzEjdzfbY5qb2mnBK5yxMPp2Q7buw5uRYkK4NRHvZM&
+```
+
+Full example of a Base String + Key + Signature:
+
+```
+Base String:
+
+GEThttps://nuorder.com/api/initiate?oauth_consumer_key=YUb6RBRsd8cH5KNW44UeXmat&oauth_token=&oauth_timestamp=1488918667&oauth_nonce=Mevx8gQQ3pzmkdXq&oauth_version=1.0&oauth_signature_method=HMAC-SHA1&oauth_callback=oob
+
+Secret Key:
+
+pFwRJnYWTFqhdnXHSy7xr5pzEjdzfbY5qb2mnBK5yxMPp2Q7buw5uRYkK4NRHvZM&
+
+-----
+
+Signature:
+
+95556c9e7e000bd3769156e01c503d18923b7702
+```
+
+Tester: http://www.freeformatter.com/hmac-generator.html
+
+**Authorization Header**
+
+Once you have generated your signature you must send the OAuth header on each API call. The OAuth header looks like this:
+
+```
+OAuth oauth_consumer_key='YUb6RBRsd8cH5KNW44UeXmat',oauth_timestamp='1488918667',oauth_nonce='Mevx8gQQ3pzmkdXq',oauth_version='1.0',oauth_signature_method='HMAC-SHA1',oauth_token='',oauth_signature='95556c9e7e000bd3769156e01c503d18923b7702',oauth_callback='oob',application_name='application_name'
+```
+
+### OAuth Initiate [GET /api/initiate]
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes
+        + oauth_token: `zRR5Uux7DP8D4JWB` (string) - Temporary token used to make /api/token calls to NuORDER
+        + oauth_token_secret: `fq2f7SMD4MHKgbEYU2bu7ySM` (string) - Temporary token secret used to make /api/token calls to NuORDER
+        + oauth_callback_confirmed: `true` (boolean) - Whether callback confirmed
+
+### OAuth Token [GET /api/token]
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes
+        + oauth_token: `XqQTzfjHq2rWxgJ2sGtwAf3W` (string) - Permenant token used to make all calls to NuORDER
+        + oauth_token_secret: `Bsv8eHy37x6466mjf5JZMqvjUyBvaawEeR9S3v6KYAwhfXb3d8eAdQMjKgsTGdbN` (string) - Permenant token secret used to make all calls to NuORDER
+
+
+## Buyer Collection [/api/company/]
+
+APIs for managing your Buyers.
+
+## Add Buyer to a Company by ID [PUT /api/company/{id}/add/buyer]
+
++ Parameters
+    + id: `59af25379042bd00013b7996` (string, required) - company id
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (BuyerFormatted)
+
++ Response 200 (application/json)
+
+    + Attributes (BuyerFormatted)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid parameters'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Company not found'
+        }
+
+
+
+## Add Buyer to a Company by Code [PUT /api/company/code/{code}/add/buyer]
+
++ Parameters
+    + code: `31301` (string, required) - company id
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (BuyerFormatted)
+
++ Response 200 (application/json)
+
+    + Attributes (BuyerFormatted)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid parameters'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Company not found'
+        }
+
+
+## Update Buyer by Company ID [POST /api/company/{id}/update/buyer/{email}]
+
++ Parameters
+    + id: `59af25379042bd00013b7996` (string, required) - company id
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (BuyerFormatted)
+
++ Response 200 (application/json)
+
+    + Attributes (BuyerFormatted)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid parameters'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Buyer not found'
+        }
+
+
+## Update Buyer by Company Code [POST /api/company/code/{code}/update/buyer/{email}]
+
++ Parameters
+    + code: `31301` (string, required) - company id
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (BuyerFormatted)
+
++ Response 200 (application/json)
+
+    + Attributes (BuyerFormatted)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid parameters'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Buyer not found'
+        }
+
+
+
+## Remove Buyer by Company ID [DELETE /api/company/{id}/buyer/{email}]
+
++ Parameters
+    + id: `59af25379042bd00013b7996` (string, required) - company id
+    + email: `lazy-buyer@nuorder.com` - (string, required) - buyer email
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid parameters'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Buyer not found'
+        }
+
+
+## Remove Buyer by Company Code [DELETE /api/company/code/{code}/buyer/{email}]
+
++ Parameters
+    + code: `31301` (string, required) - company id
+    + email: `lazy-buyer@nuorder.com` - (string, required) - buyer email
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid parameters'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Company not found'
+        }
+
+
+## Remove All Buyers by Company ID [DELETE /api/company/{id}/buyers]
+
++ Parameters
+    + id: `59af25379042bd00013b7996` (string, required) - company id
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {}
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid parameters'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Company not found'
+        }
+
+
+## Remove All Buyers by Company Code [DELETE /api/company/code/{code}/buyers]
+
++ Parameters
+    + code: `31301` (string, required) - company id
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {}
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid parameters'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Company not found'
+        }
+
+## Catalog Collection [/api/v3.1/catalog]
+
+APIs for managing your Catalogs.
+
+## Create Catalog [POST /api/v3.1/catalogs]
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (Catalog)
+
++ Response 201 (application/json)
+    + Attributes (Catalog)
+
++ Response 400 (application/json)
+    {
+        code: 400,
+        message: 'Validation error messages'
+    }
+
++ Response 401 (application/json)
+    {
+        code: 401,
+        message: 'Invalid permissions'
+    }
+
+## Fetch all Catalogs [GET /api/v3.1/catalogs]
++ Parameters
+    + type: `linesheet | catalog | custom-list` (string, optional) - Identifies the catalog type
+    + active: (boolean, optional) - Used to query active, inactive or all catalogs
+    + __sort: `modified_on` (string, optional) - Sort parameter
+    + __sort_order: `asc | desc` (string, optional) - Sort direction
+    + __limit: `100` (number, optional) - Amount of returned records (by default is 50)
+    + __last_id: `58bf12ef30c543013d31ef5d` (string, optional) - ID of last catalog fetched (used for fetching next records)
+    + __populate: (enum) - Indicates data points to be fetched together with catalog
+        + Members
+            + __variant
+            + __price
+            + __item
+
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (array[Catalog])
+
+## Fetch Catalog by ID [GET /api/v3.1/catalog/{id}]
++ Parameters
+    + id: `59af25379042bd00013b7996` (string, required) - catalog id
+
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (Catalog)
+
+## Update Catalog by ID [PATCH /api/v3.1/catalog/{id}]
++ Parameters
+    + id: `58beec5330c543013d31ef5b` (string) - Catalog ID
+
++ Request Partial Example (application/json)
+    This is a `PATCH` endpoint, so you need only send what changed.
+
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+        {
+            title: 'New Catalog Title'
+        }
+
++ Response 200 (application/json)
+    + Attributes (Catalog)
+
++ Response 400 (application/json)
+    {
+        message: 'Error message with what field(s) need to be corrected',
+        args: {
+            /* fields that need to be corrected */
+        }
+    }
+
++ Response 403 (application/json)
+    {
+        message: 'You do not have permission to manage catalogs'
+    }
+
++ Response 404 (application/json)
+    {
+        message: 'Catalog not found',
+        {
+            id: '58beec5330c543013d31ef5b'
+        }
+    }
+
+## Remove Catalog by ID [DELETE /api/v3.1/catalog/{id}]
++ Parameters
+    + id: `59af25379042bd00013b7996` (string, required) - catalog id
+
++ Request (application/json)
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    {
+        id: '59af25379042bd00013b7996',
+        success: true
+    }
+
+## Catalog Entries [/api/v3.1/catalog/{id}/entries]
+APIs for managing your Catalog entries.
+
+## Fetch catalog entries [GET /api/v3.1/catalog/{id}/entries]
++ Parameters
+    + __archived: (boolean, optional) - Used to query active, inactive or all catalogs
+    + __search: `red jacket` (string, optional) - A search string
+    + __limit: `100` (number, optional) - Amount of returned records (by default is 50)
+    + __last_id: `58bf12ef30c543013d31ef5d` (string, optional) - ID of last catalog entry fetched (used for fetching next entries)
+    + __populate: (enum) - Indicates data points to be fetched together with catalog
+        + Members
+            + __variant
+            + __price
+            + __item
+    + __fields: `__all` (array[string]) - Array of field names
+
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (CatalogEntry)
+
+## Create catalog entry [POST /api/v3.1/catalog/{id}/entries]
++ Parameters
+    + id: `5cafcc501aedea3950cf8047` (string) - Catalog ID
+
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (CatalogEntry)
+
++ Response 201 (application/json)
+    + Attributes (array[CatalogEntry])
+
++ Response 400 (application/json)
+    {
+        code: 400,
+        message: 'Validation error messages'
+    }
+
++ Response 401 (application/json)
+    {
+        code: 401,
+        message: 'You do not have permission to edit this catalog'
+    }
+
+## Bulk create catalog entries [POST /api/v3.1/catalog/{id}/entries/bulk]
++ Parameters
+    + id: `5cafcc501aedea3950cf8047` (string) - Catalog ID
+
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes
+        + entries: (array[CatalogEntry])
+
++ Response 201 (application/json)
+    + Attributes (array[CatalogEntry])
+
++ Response 400 (application/json)
+    {
+        code: 400,
+        message: 'Validation error messages'
+    }
+
++ Response 401 (application/json)
+    {
+        code: 401,
+        message: 'You do not have permission to edit this catalog'
+    }
+
+## Update entry by ID [PATCH /api/v3.1/catalog/{catalogId}/entry/{id}]
++ Request Partial Example (application/json)
+    This is a `PATCH` endpoint, so you need only send what changed.
+
++ Parameters
+    + id: `58beec5330c543013d31ef5b` (string) - Entry ID
+    + catalogId: `5cafcc501aedea3950cf8047` (string) - Catalog ID
+
++ Headers
+    Authorization: OAuth 1.0 Authorization Header
+
++ Body
+    {
+        notes: 'Some entry notes'
+    }
+
++ Response 200 (application/json)
+    + Attributes (CatalogEntry)
+
++ Response 400 (application/json)
+    {
+        message: 'Error message with what field(s) need to be corrected',
+        args: {
+            /* fields that need to be corrected */
+        }
+    }
+
++ Response 403 (application/json)
+    {
+        message: 'You do not have permission to edit this catalog'
+    }
+
+## Remove entry by ID [DELETE /api/v3.1/catalog/{catalogId}/entry/{id}]
++ Parameters
+    + id: `58beec5330c543013d31ef5b` (string) - Entry ID
+    + catalogId: `5cafcc501aedea3950cf8047` (string) - Catalog ID
+
++ Request (application/json)
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    {
+        id: '58beec5330c543013d31ef5b',
+        success: true
+    }
+
+## Delete all entries [DELETE /api/v3.1/catalog/{catalogId}/entries]
++ Parameters
+    + catalogId: `5cafcc501aedea3950cf8047` (string) - Catalog ID
+
++ Request (application/json)
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    {
+        id: '58beec5330c543013d31ef5b',
+        success: true
+    }
+
+## Catalog Restrictions [/api/v3.0/catalog/{id}/restrictions]
+APIs for managing your Catalog restrictions.
+
+## Create restriction [POST /api/v3.0/catalog/{id}/restrictions]
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (CatalogRestriction)
+
++ Response 201 (application/json)
+    + Attributes (CatalogRestriction)
+
++ Response 400 (application/json)
+    {
+        code: 400,
+        message: 'Validation error messages'
+    }
+
++ Response 401 (application/json)
+    {
+        code: 401,
+        message: 'You do not have permission to edit this catalog'
+    }
+
+## Bulk create restrictions  [POST /api/v3.0/catalog/{id}/restrictions/bulk]
++ Parameters
+    + id: `5cafcc501aedea3950cf8047` (string) - Catalog ID
+
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes
+        + restrictions: (array[CatalogRestriction])
+
++ Response 201 (application/json)
+    + Attributes (array[CatalogRestriction])
+
++ Response 400 (application/json)
+    {
+        code: 400,
+        message: 'Validation error messages'
+    }
+
++ Response 401 (application/json)
+    {
+        code: 401,
+        message: 'You do not have permission to edit this catalog'
+    }
+
+## Remove all restrictions [DELETE /api/v3.0/catalog/{id}/restrictions]
++ Parameters
+    + catalogId: `5cafcc501aedea3950cf8047` (string) - Catalog ID
+
++ Request (application/json)
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (array[CatalogRestrictionDeleted])
+
+## Remove restriction by ID [DELETE /api/v3.0/catalog/{catalogId}/restriction/{id}]
++ Parameters
+    + id: `58beec5330c543013d31ef5b` (string) - Restriction ID
+    + catalogId: `5cafcc501aedea3950cf8047` (string) - Catalog ID
+
++ Request (application/json)
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    {
+        id: '58beec5330c543013d31ef5b',
+        success: true
+    }
+## Color Swatches [/api/color-swatches]
+
+APIs for managing custom color swatches
+
+### List All Color Swatches [GET /api/color-swatches]
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (array[ColorSwatch])
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to list products'
+        }
+
+
+### Get a Color Swatch by Color [GET /api/color-swatches/{color}]
+
++ Parameters
+
+    + color: `red` (string, required) - Valid product color
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (ColorSwatch)
+
++ Response 400 (application/json)
+
+        {
+            message: 'Error message with what field(s) need to be corrected'
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage products'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Color swatch not found'
+        }
+
+### Create a Color Swatch [POST /api/color-swatches]
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+
+            {
+                color: 'blue',      // should be real product color
+                swatch_type: 'hex', // optional, 'hex'/'file'
+                value: 'dddd00'     // color or public image URL
+            }
+
++ Response 201 (application/json)
+
+    + Attributes (ColorSwatch)
+
++ Response 400 (application/json)
+
+        {
+            message: 'Error message with what field(s) need to be corrected',
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage products'
+        }
+
++ Response 409 (application/json)
+
+        {
+            message: 'Color swatch is already exists'
+        }
+
+### Bulk Swatches Upload [POST /api/color-swatches/bulk]
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+
+    + Attributes(array[ColorSwatch], fixed)
+
++ Response 200 (application/json)
+
+    + Attributes(array[ColorSwatch], fixed)
+
+
++ Response 400 (application/json)
+
+        {
+            message: 'Error message with what field(s) need to be corrected',
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage products'
+        }
+
+### Update a Color Swatch [PUT /api/color-swatches/{color}]
+
++ Parameters
+    + color: `red` (string, required) - Valid product color
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+
+            {
+                swatch_type: 'hex', // optional, 'hex'/'file'
+                value: 'dddd00'     // color or public image URL
+            }
+
+
++ Response 200 (application/json)
+
+    + Attributes (ColorSwatch)
+
++ Response 400 (application/json)
+
+        {
+            message: 'Error message with what field(s) need to be corrected'
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage products'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Color swatch not found'
+        }
+
+### Update a Color Swatch with Image from Client [PUT /api/color-swatches/{color}/blob]
+
++ Parameters
+
+    + color: `red` (string, required) - Valid product color
+
++ Request (image/jpg or image/png)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+
+            Raw image data (Buffer object in nodejs)
+
++ Response 200 (application/json)
+
+    + Attributes (ColorSwatch)
+
++ Response 400 (application/json)
+
+        {
+            message: 'Error message with what field(s) need to be corrected'
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage products'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Color swatch not found'
+        }
+
+### Delete a Color Swatch [DELETE /api/color-swatches/{color}]
+
++ Parameters
+    + color (string) - swatch color
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            success: true
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage products'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Color Swatch not found'
+        }
+
+
+## Company Collection [/api/company]
+
+APIs for managing your Companies.
+
+## Get Company by ID [GET /api/company/{id}]
+
++ Parameters
+    + id: `59af25379042bd00013b7996` (string, required) - company id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (CompanyResponse)
+
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'company not found'
+        }
+
+
+## Get Company by code [GET /api/company/code/{code}]
+
++ Parameters
+    + code: `31301` (string, required) - company id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (CompanyResponse)
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'company not found'
+        }
+
+
+
+## Get Companies IDs [GET /api/companies/list]
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        [
+            '54caa0e7ffea91557a81ecdd',
+            '54caa0e7ffea91557a81ece1',
+            '54caa0e7ffea91557a81ece5'
+        ]
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+## Get Companies Codes [GET /api/companies/codes/list]
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        [
+            '',
+            '0819941',
+            '11111',
+            '111111',
+            '1587479',
+        ]
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+## Get Companies by created/modified filter [GET /api/companies/{field}/{when}/{mm}/{dd}/{yyyy}]
+
++ Parameters
+    + field: `created` (string, required) - field to filter on
+        + Members
+            + created
+            + modified
+    + when: `before` (string, required) - before or after
+        + Members
+            + before
+            + after
+    + mm: `7` (number, required) - month number 1...12
+    + dd: `29` (number, required) - day of month: 1...31
+    + yyyy: `2017` (number, required) - year
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (array[CompanyResponse])
+
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid month, Invalid Year'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+## Get Companies IDs by Rep Email [GET /api/companies/rep/{email}/list]
+
++ Parameters
+    + email: `example@nuorder.com` (string, required) - Rep email
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            'rep': 'example@nuorder.org',
+            'companies': [
+                '54caa0e7ffea91557a81ecfd',
+                '54caa0e7ffea91557a81ed39',
+                '54caa0e8ffea91557a81ed56'
+            ]
+        }
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+## Get Companies by Rep Email [GET /api/companies/rep/{email}/detail]
+
++ Parameters
+    + email: `example@nuorder.com` (string, required) - Rep email
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (array[CompanyResponse])
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+## Create Company [PUT /api/company/new]
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Company)
+
++ Response 201 (application/json)
+
+    + Attributes (CompanyResponse)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Validation error messages'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'Another company already exists with the given company code.'
+        }
+
+
+## Create/Update Company [PUT /api/company/new/force]
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Company)
+
++ Response 201 (application/json)
+
+    + Attributes (CompanyResponse)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Validation error messages'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+## Update Company by ID [POST /api/company/{id}]
+
++ Parameters
+    + id: `59af25379042bd00013b7996` (string, required) - company id
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Company)
+
++ Response 200 (application/json)
+
+    + Attributes (CompanyResponse)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Validation error messages'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'company not found'
+        }
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'Another company already exists with the given company code.'
+        }
+
+
+## Update Company by company Code [POST /api/company/code/{code}]
+
++ Parameters
+    + code: `31301` (string, required) - company id
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Company)
+
++ Response 200 (application/json)
+
+    + Attributes (CompanyResponse)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Validation error messages'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'company not found'
+        }
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'Another company already exists with the given company code.'
+        }
+
+
+
+## Archive/Unarchive Company by ID [POST /api/company/{status}/{id}]
+
++ Parameters
+    + status: `archive` (enum, required) - new company status
+        + Members
+            + archive
+            + unarchive
+    + id: `59af25379042bd00013b7996` (string, required) - company id
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            'success': true
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'company not found'
+        }
+
+
+## Archive/Unarchive Company by company Code [POST /api/company/{status}/code/{code}]
+
++ Parameters
+    + status: `archive` (enum, required) - new company status
+        + Members
+            + archive
+            + unarchive
+    + code: `31301` (string, required) - company id
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            'success': true
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'company not found'
+        }
+
+## Customer Groups Collection [/api/v2.0/customer-groups]
+
+APIs for managing your Customer / User Groups.
+
+### Get List Customer Groups [GET /api/v2.0/customer-groups]
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (array[CustomerGroup])
+
+
+### Get Customer Group [GET /api/v2.0/customer-groups/{groupName}]
+
++ Parameters
+    + groupName: `premium_customers` (string, required) - customer group name
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (CustomerGroup)
+
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Customer group not found'
+        }
+
+### Create or Edit a Customer Group [PUT /api/v2.0/customer-groups/{groupName}]
+
++ Parameters
+    + groupName: `premium_customers` (string, required) - customer group name
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (CustomerGroup)
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: "Validation error"
+            errors: ["'department' is not a filterable product field"]
+        }
+
+
+### Delete Customer Group [DELETE /api/v2.0/customer-groups/{groupName}]
+
++ Parameters
+    + groupName: `premium_customers` (string, required) - customer group name
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            success: true
+        }
+
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Customer group not found'
+        }
+
+
+## Inventory Collection [/api/inventory]
+
+APIs for managing your Inventory.
+
+### Get Inventory by ID [GET /api/inventory/{id}]
+
++ Parameters
+    + id: `59f0cdde949776162469a73f` (string, required) - product id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (InventoryWrapper)
+
++ Response 403 (application/json)
+
+        {
+            code: 403,
+            message: 'No permissions for inventory management'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'product not found'
+        }
+
+### Get Inventory by External ID [GET /api/inventory/external_id/{id}]
+
++ Parameters
+    + id: `5555` (string, required) - external product id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (InventoryWrapper)
+
++ Response 403 (application/json)
+
+        {
+            code: 403,
+            message: 'No permissions for inventory management'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'product not found'
+        }
+
+### Get Inventory by Grouping [GET /api/inventory/{grouping}/{value}]
+
++ Parameters
+    + grouping: `season` (enum, required) - product grouping
+        + Members
+            + season
+            + department
+            + division
+            + category
+    + value: `fall` (string, required) - product grouping value
+
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (InventoryGroupingResponse)
+
++ Response 403 (application/json)
+
+        {
+            code: 403,
+            message: 'No permissions for inventory management'
+        }
+
+### Update Inventory by ID [POST /api/inventory/{id}]
+
++ Parameters
+    + id: `59f0cdde949776162469a73f` (string, required) - product id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (InventoryWrapper)
+
++ Response 200 (application/json)
+
+    + Attributes (InventoryWrapper)
+
++ Response 403 (application/json)
+
+        {
+            code: 403,
+            message: 'No permissions for inventory management'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'product not found'
+        }
+
+### Update Inventory by External ID [POST /api/inventory/external_id/{id}]
+
++ Parameters
+    + id: `5555` (string, required) - product external id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (InventoryWrapper)
+
++ Response 200 (application/json)
+
+    + Attributes (InventoryWrapper)
+
++ Response 403 (application/json)
+
+        {
+            code: 403,
+            message: 'No permissions for inventory management'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'product not found'
+        }
+
+### Delete Inventory by ID [DELETE /api/inventory/{id}]
+
++ Parameters
+    + id: `59f0cdde949776162469a73f` (string, required) - product id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            success: true
+        }
+
++ Response 403 (application/json)
+
+        {
+            code: 403,
+            message: 'No permissions for inventory management'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'product not found'
+        }
+
+### Delete Inventory by External ID [DELETE /api/inventory/external_id/{id}]
+
++ Parameters
+    + id: `5555` (string, required) - external product id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            success: true
+        }
+
++ Response 403 (application/json)
+
+        {
+            code: 403,
+            message: 'No permissions for inventory management'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'product not found'
+        }
+
+### Refresh Inventory Flags [PUT /api/inventory/flags]
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (InventoryFlagsRequest)
+
++ Response 200 (application/json)
+
+    + Body
+
+            {
+                success: true
+            }
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'product_ids must be an array of 25 elements or less'
+        }
+
+
++ Response 403 (application/json)
+
+        {
+            code: 403,
+            message: 'No permissions for inventory management'
+        }
+
+
+## Order Collection [/api/orders]
+
+APIs for managing your Orders.
+
+Order edits will lock your order from being edited in NuOrder UI.
+
+Not sending `line_items` will cancel your order.
+
+### Get Order by ID [GET /api/order/{id}]
+
++ Parameters
+    + id: `5565fd0f1954192642d1db48` (string, required) - Order id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (Order)
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            'code': 404,
+            'message': 'order not found'
+        }
+
+### Get Order by Number [GET /api/order/number/{number}]
+
++ Parameters
+    + number: `19985624` (string, required) - Order id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (Order)
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            'code': 404,
+            'message': 'order not found'
+        }
+
+### Get Orders By Status [GET /api/orders/{status}/detail]
+
++ Parameters
+    + status: `approved` (enum, required) - Order Status
+        + Members
+            + draft
+            + review
+            + pending
+            + approved
+            + processed
+            + shipped
+            + cancelled
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (array[Order])
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### List Orders By Status [GET /api/orders/{status}/list]
+
++ Parameters
+    + status: `approved` (enum, required) - Order Status
+        + Members
+            + draft
+            + review
+            + pending
+            + approved
+            + processed
+            + shipped
+            + cancelled
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        [
+            "5a782a638f03db00276f7754",
+            "5a7842207bd24c0013bfffbc",
+            "5a70c8de3a22b00001218fd1",
+            "5a7842207bd24c0013bfffba"
+        ]
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Create [PUT /api/order/new]
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (OrderRequest)
+
++ Response 201 (application/json)
+    + Attributes (Order)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Error message with what field(s) need to be corrected',
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 403 (application/json)
+
+        {
+            code: 403
+            message: 'You do not have permission to create orders'
+        }
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'An order already exists'
+        }
+
+## Update Order [POST /api/order/{id}]
+
++ Parameters
+    + id: `59e4eeca3d58e0000123a346` (string, required) - order id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (OrderRequest)
+
++ Response 200 (application/json)
+
+        {
+            'success': true,
+            'message': 'Order Cancelled'
+        }
+
+
++ Response 304 (application/json)
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Order not found'
+        }
+
+### Update Order by Number [POST /api/order/number/{id}]
+
++ Parameters
+    + id: `12345` (string, required) - Order Number or External ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (OrderRequest)
+
++ Response 200 (application/json)
+
+    + Attributes (Order)
+
+
++ Response 400 (application/json)
+
+    {
+        code: 400,
+        message: 'Error message with what field(s) need to be corrected',
+    }
+
++ Response 401 (application/json)
+
+    {
+        code: 401,
+        message: 'Invalid permissions'
+    }
+
++ Response 403 (application/json)
+
+            {
+                code: 403
+                message: 'You do not have permission to edit orders'
+            }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'Order not found'
+            }
+
+
+## Update Order Status by Order ID [POST /api/order/{id}/{status}]
+
++ Parameters
+    + id: `59e4eeca3d58e0000123a346` (string, required) - order id
+    + status: `approved` (enum, required) - Order Status
+        + Members
+            + review
+            + pending
+            + approved
+            + processed
+            + shipped
+            + cancelled
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (Order)
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'order not found'
+            }
+
+
+## Update Order Status by Order Number [POST /api/order/number/{number}/{status}]
+
++ Parameters
+    + number: `234233` (string, required) - Order number
+    + status: `approved` (enum, required) - Order Status
+        + Members
+            + review
+            + pending
+            + approved
+            + processed
+            + shipped
+            + cancelled
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (Order)
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'order not found'
+            }
+
+
+
+## Patch Order field [POST /api/order/{id}/set/{field}/{value}]
+
++ Parameters
+    + id: `59e4eeca3d58e0000123a346` (string, required) - order id
+    + field: `external_id` (string, required) - name of field to be patched
+        + Members
+            + external_id
+    + value: `value` (string, required) - new value for the field
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
++ Response 200 (application/json)
+    + Attributes (Order)
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'order not found'
+            }
+
+## Patch Order field by Order Number [POST /api/order/number/{number}/set/{field}/{value}]
+
++ Parameters
+    + number: `234233` (string, required) - Order number
+    + field: `external_id` (string, required) - name of field to be patched
+        + Members
+            + external_id
+    + value: `value` (string, required) - new value for the field
+
++ Request (application/json)
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+        
++ Response 200 (application/json)
+    + Attributes (Order)
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'order not found'
+            }
+
+
+## Payment Collection [/api/payments]
+
+APIs for managing your Payments.
+
+Payments are applied at the `order_group` level in NuORDER. An `order_group` is the aggregate of all of the orders that were submitted together (before order splitting).
+
+In order to make a payment in NuORDER you must have two pieces of information:
+
+* `order_group_id` - The order group, which is stored on the `Order` object
+* `payment_group_id` - The payment group, which can be looked up with the `order_group_id`
+
+A suggested workflow:
+
+(1) Generally you have an order to charge against, so you would first make an API call to get the `order_group_id`:
+
+`GET` - `/api/order/{id}`
+`GET` - `/api/order/number/{number}`
+
+Response (order):
+```
+{
+    _id: '5ab948c576618a86877056f7',
+    order_number: '123456',
+    order_group_id: '5ab948d476618a86877056fb',
+    ...
+}
+```
+
+(2) With the `order_group_id` you can call the payment-group route to get your `payment_group_id`:
+
+`GET` - `/api/order-group/{orderGroupId}/payment-group`
+
+Response (payment-group):
+```
+{
+    _id: '5ab9492676618a8687705700',
+    order_group_id: '5ab948d476618a86877056fb',
+    ...
+}
+```
+
+The `_id` in this payload is the `payment_group_id` you will need for all payment calls.
+
+---
+
+The following transaction types are supported by NuORDER:
+
+* `authorize` - Authorize a card for a specific amount
+* `capture` - Capture a previously Authorized transaction
+* `refund` - Refund a capture or a charge transaction
+* `void` - Void an Authorize transaction
+* `charge` - Charge a card without an prior Authorize transaction
+
+### Get Payment Group [GET /api/order-group/{orderGroupId}/payment-group]
+
++ Parameters
+    + orderGroupId: `5aabe2b2fa217edddeaab187` (string, required) - order group ID
+
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (PaymentGroup)
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Payment group not found'
+        }
+
+### Get Payment Group by Transaction ID [GET /api/transaction/{transactionId}/payment-group]
+
++ Parameters
+    + transactionId: `5b071eddfb972c1170aa0442` (string, required) - transaction ID
+
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (PaymentGroup)
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Payment group not found'
+        }
+
+### Get Payment Group Balance [GET /api/payment/{paymentGroupId}/balance]
+
++ Parameters
+    + paymentGroupId: `5aabd2c3fa217edddeaab162` (string, required) - payment group ID
+
++ Request
+    + Headers
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Body
+
+            {
+                amount: 200,
+                currency_code: 'USD'
+            }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'Payment group not found'
+            }
+
+### Get Credit Card External Tokens [GET /api/payment/credit-card/{creditCardId}/external-tokens]
+Get external tokens for a particular credit card.
+
++ Parameters
+
+    + creditCardId: `5aabd2c3fa217edddeaab162` (string, required) - credit card ID
+
++ Request
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (CreditCardExternalTokens)
+
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Credit card not found'
+        }
+
+
+### Authorize Transaction [POST /api/payment/{paymentGroupId}/authorize]
+
++ Parameters
+    + paymentGroupId: `5aabd2c3fa217edddeaab162` (string, required) - payment group ID
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (PaymentAuthorize)
+
++ Response 200 (application/json)
+
+    + Attributes (Transaction)
+
++ Response 400 (application/json)
+
+    + Body
+
+            {
+                code: 400,
+                message: 'Missing or invalid fields'
+            }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'Payment group not found'
+            }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'Payment account not found'
+            }
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'Transaction with this transaction_client_token_ref has already been created'
+        }
+
+### Charge Transaction [POST /api/payment/{paymentGroupId}/charge]
+
++ Parameters
+    + paymentGroupId: `5aabd2c3fa217edddeaab162` (string, required) - payment group ID
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (PaymentCharge)
+
++ Response 200 (application/json)
+
+    + Attributes (Transaction)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Missing or invalid fields'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Payment group not found'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Payment account not found'
+        }
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'Transaction with this transaction_client_token_ref has already been created'
+        }
+
+
+### Capture Transaction [POST /api/payment/{paymentGroupId}/capture/{transactionId}]
+Capture an existing Authorization transaction.
+
++ Parameters
+    + paymentGroupId: `5aabd2c3fa217edddeaab162` (string, required) - payment group ID
+    + transactionId: `5aac22dffa217edddeaab188` (string, required) - authorization transaction ID to capture
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (PaymentCapture)
+
++ Response 200 (application/json)
+
+    + Attributes (Transaction)
+
++ Response 400 (application/json)
+
+    + Body
+
+            {
+                code: 400,
+                message: 'Missing or invalid fields'
+            }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'Payment group not found'
+            }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'Transaction not found'
+            }
+
++ Response 409 (application/json)
+
+            {
+                code: 409,
+                message: 'Transaction with this transaction_client_token_ref has already been created'
+            }
+
+### Refund Transaction [POST /api/payment/{paymentGroupId}/refund/{transactionId}]
+Refund an existing Capture or Charge transaction.
+
++ Parameters
+    + paymentGroupId: `5aabd2c3fa217edddeaab162` (string, required) - payment group ID
+    + transactionId: `5aac22dffa217edddeaab188` (string, required) - authorization transaction ID to capture
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (PaymentRefund)
+
++ Response 200 (application/json)
+
+    + Attributes (Transaction)
+
++ Response 400 (application/json)
+
+    + Body
+
+            {
+                code: 400,
+                message: 'Missing or invalid fields'
+            }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'Payment group not found'
+            }
+
++ Response 404 (application/json)
+
+            {
+                code: 404,
+                message: 'Transaction not found'
+            }
+
++ Response 409 (application/json)
+
+            {
+                code: 409,
+                message: 'Transaction with this transaction_client_token_ref has already been created'
+            }
+
+
+### Void Transaction [DELETE /api/payment/{paymentGroupId}/void/{transactionId}]
+Void an existing Authorization transaction.
+
++ Parameters
+    + paymentGroupId: `5aabd2c3fa217edddeaab162` (string, required) - payment group ID
+    + transactionId: `5aac22dffa217edddeaab188` (string, required) - authorization transaction ID to void
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (Transaction)
+
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Payment group not found'
+        }
+
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Transaction not found'
+        }
+
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'Transaction with this transaction_client_token_ref has already been created'
+        }
+
+
+## Pricesheet Collection [/api/pricesheet]
+
+APIs for managing your Pricesheets.
+
+### Get pricesheet by template [GET /api/pricesheet/{template}]
+
++ Parameters
+    + template: `A23N` (string, required) - pricesheet template name
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes
+        + pricing: (array[PricesheetItemResponse])
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Pricing template not found'
+        }
+
+### Get pricesheets list [GET /api/pricesheets/list]
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Body
+
+            [
+                { name: 'template1' }, 
+                { name: 'template2' } , 
+                { name: 'template3' }
+            ]
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Get pricesheets companies IDs [GET /api/pricesheets/list/companies/{template}]
+
++ Parameters
+    + template: `A23N` (string, required) - pricesheet template name
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Body
+
+            [
+                '59d425cae1d38e00019e7608',
+                '570707c62f7f6d803ceb52bd',
+                '560b53e2d9045d4e36cb97da'
+            ]
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Get pricesheets companies codes [GET /api/pricesheets/list/companies/codes/{template}]
+
++ Parameters
+    + template: `A23N` (string, required) - pricesheet template name
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization
+
++ Response 200 (application/json)
+
+    + Body
+
+                [
+                    '159488',
+                    'AGABI01',
+                    'QT123'
+                ]
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Create pricesheet [PUT /api/pricesheet/{template}]
+
++ Parameters
+    + template: `A23N` (string, required) - pricesheet template name
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes
+        + pricing: (array[PricesheetRequest])
+
+
+
++ Response 200 (application/json)
+
+        {
+            'updates': [
+                'Pricing template awesome_template has set a price for 5996118f6873730001744fff (A930|spring/summer|all dark blue)'
+            ],
+            'errors': []
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'Pricing template already exists'
+        }
+
+### Assign pricesheet to product by ID [POST /api/pricesheet/{template}/assign/product/{id}]
+
++ Parameters
+    + template: `A23N` (string, required) - pricesheet template name
+    + id: `5996118f6873730001744fff` (string, required) - product ID
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes
+        + pricing: (array[PricesheetRequest])
+
++ Response 200 (application/json)
+
+        {
+            "updates": [
+            "Pricing template some-name has set a price for 5996118f6873730001744ff6 (A363|spring/summer|rose gold/gunmetal/brown)"
+            ],
+            "errors": []
+        }
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: '5996118f6873730001744fff wholesale is missing, disabled is missing'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Assign pricesheet to product by external_id [POST /api/pricesheet/{template}/assign/product/external_id/{id}]
+
++ Parameters
+    + template: `A23N` (string, required) - pricesheet template name
+    + id: `A486-springsummer-blacksilver` (string, required) - product external_id or brand_id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes
+        + pricing: (array[PricesheetRequest])
+
++ Response 200 (application/json)
+
+        {
+            "updates": [
+            "Pricing template ch3 has set a price for A486-springsummer-blacksilver (A486|spring/summer|black/silver)"
+            ],
+            "errors": []
+        }
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'A486-springsummer-blacksilver size[0].wholesale is missing'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Delete pricesheet from product by ID [DELETE /api/pricesheet/{template}/remove/product/{id}]
+
++ Parameters
+    + template: `A23N` (string, required) - pricesheet template name
+    + id: `5996118f6873730001744fff` (string, required) - product ID
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            "success": true
+        }
+
++ Response 400 (application/json)
+
+        {
+            "code": 400,
+            "message": "Invalid ID Parameter"
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Delete pricesheet from product by external_id [DELETE /api/pricesheet/{template}/remove/product/external_id/{id}]
+
++ Parameters
+    + template: `A23N` (string, required) - pricesheet template name
+    + id: `A486-springsummer-blacksilver` (string, required) - product external_id or brand_id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            "success": true
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Update pricesheet by product ID [POST /api/product/{id}/pricesheets]
+
++ Parameters
+    + id: `5996118f6873730001744ff6` (string, required) - product ID
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (array[PricesheetRequest])
+
++ Response 200 (application/json)
+
+        [
+            {
+                "message": "Pricing template ch3 has set a price for 5996118f6873730001744ff6 (A363|spring/summer|rose gold/gunmetal/brown)",
+                "index": 0,
+                "success": true
+            }
+        ]
+
++ Response 400 (application/json)
+
+        {
+            "code": 400,
+            "message": "Invalid ID Parameter"
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Update pricesheet by product external ID [POST /api/product/external_id/{id}/pricesheets]
+
++ Parameters
+    + id: `A486-springsummer-blacksilver` (string, required) - product external_id or brand_id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (array[PricesheetRequest])
+
++ Response 200 (application/json)
+
+        [
+            {
+                "message": "Pricing template ch3 has set a price for A486-springsummer-blacksilver(A486|spring/summer|black/silver)",
+                "index": 0,
+                "success": true
+            }
+        ]
+
++ Response 400 (application/json)
+
+        {
+            "code": 400,
+            "message": "Invalid ID Parameter"
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Delete pricesheet by product ID [DELETE /api/product/{id}/pricesheets]
+
++ Parameters
+    + id: `5996118f6873730001744ff6` (string, required) - product ID
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+            {
+                "success": true
+            }
+
++ Response 400 (application/json)
+
+        {
+            "code": 400,
+            "message": "Invalid ID Parameter"
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Delete pricesheet by product external ID [DELETE /api/product/external_id/{id}/pricesheets]
+
++ Parameters
+    + id: `A486-springsummer-blacksilver` (string, required) - product external_id or brand_id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            "success": true
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Bulk assign pricesheet to products [POST /api/pricesheet/bulk/assign/{template}]
+
++ Parameters
+    + template: `A23N` (string, required) - pricesheet template name
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes
+        + pricing: (array[PricesheetRequest])
+
++ Response 200 (application/json)
+
+        {
+            "updates": [
+                "Pricing template 467 has set a price for 5996118f6873730001744fff (A930|spring/summer|all dark blue)"
+            ],
+            "errors": [
+                "5996118f6873730001744fff size[0].wholesale is missing"
+            ]
+        }
+
++ Response 400 (application/json)
+
+        {
+            "code": 400,
+            "message": "Invalid ID Parameter"
+        }
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Bulk remove pricesheet from all products [DELETE /api/pricesheet/bulk/remove/{template}]
+
++ Parameters
+    + template: `A23N` (string, required) - pricesheet template name
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            "success": true
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+## Product Collection [/api/product]
+
+APIs for managing your Products.
+
+### Get Product by ID [GET /api/product/{id}]
+
++ Parameters
+    + id: `59e4fad8cddc5c50bffa4188` (string, required) - Product ID
+
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (ProductResponse)
+
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid input data'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Product not found'
+        }
+
+
+
+### Get Product by external ID [GET /api/product/external_id/{brand_id}]
+
++ Parameters
+    + brand_id: `172ak061712-001` (string, required) - Product brand ID
+
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (ProductResponse)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid input data'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Product not found'
+        }
+
+
+
+### Get values of Products' specified by grouping  [GET /api/products/{grouping}/list]
+
++ Parameters
+    + grouping: `style_number` (string, required) - product property (field name) which values needs to be taken
+
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (array)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid input data'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+
+### Get Products matched grouping value  [GET /api/products/{grouping}/{value}/detail]
+
++ Parameters
+    + grouping: `color_code` (string, required) - product property (field name)
+    + value: `black` (string, required) - grouping value
+
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        [
+            '54e508366c4ef2f027aea546',
+            '54e508366c4ef2f027aea547'
+        ]
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid input data'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+### Get Products IDs matched grouping value  [GET /api/products/{grouping}/{value}/list]
+
++ Parameters
+    + grouping: `color_code` (string, required) - product property (field name)
+    + value: `black` (string, required) - grouping value
+
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        [
+            '54e508366c4ef2f027aea546',
+            '54e508366c4ef2f027aea547'
+        ]
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid input data'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+
+### Get Products by created/modified filter [GET /api/products/{field}/{when}/{mm}/{dd}/{yyyy}]
+
++ Parameters
+    + field: `created` (string, required) - field to filter on
+        + Members
+            + created
+            + modified
+    + when: `before` (string, required) - before or after
+        + Members
+            + before
+            + after
+    + mm: `7` (number, required) - month number 1...12
+    + dd: `29` (number, required) - day of month: 1...31
+    + yyyy: `2017` (number, required) - year
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (array[ProductResponse])
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Invalid input data'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+
+
+### Update Product by ID [POST /api/product/{id}]
+
++ Parameters
+    + id: `59523f99cf355d0001e75f43` (string, required) - product id
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (Product)
+
++ Response 200 (application/json)
+
+    + Attributes (ProductResponse)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Validation error messages'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Product not found'
+        }
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'Another product already exists with the given composite keys.'
+        }
+
+
+### Update Product by external ID [POST /api/product/external_id/{external_id}]
+
++ Parameters
+    + external_id: `172ak061712-001` (string, required) - product external id
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Product)
+
++ Response 200 (application/json)
+
+    + Attributes (ProductResponse)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Validation error messages'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Product not found'
+        }
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'Another product already exists with the given composite keys.'
+        }
+
+
+
+### Create Product [PUT /api/product/new]
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (Product)
+
++ Response 201 (application/json)
+
+    + Attributes (ProductResponse)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Validation error messages'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 409 (application/json)
+
+        {
+            code: 400,
+            message: 'Another Product already exists with the given brand_id or composite keys.'
+        }
+
+### Create or update Product [PUT /api/product/new/force]
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+    + Body
+    + Attributes (Product)
+
++ Response 201 (application/json)
+
+    + Attributes (ProductResponse)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Validation error message'
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+### Change Product status by ID [POST /api/product/{status}/{id}]
+
++ Parameters
+    + status: `restore` (string, required) - product status
+        + Members
+            + archive
+            + cancel
+            + unarchive
+            + restore
+    + id: `59523f99cf355d0001e75f43` (string, required) - product id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            'success': true
+        }
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Product not found'
+        }
+
++ Response 409 (application/json)
+
+        {
+            code: 409,
+            message: 'Another product already exists with the given composite keys.'
+        }
+
+
+### Change Product status by external ID [POST /api/product/{status}/external_id/{external_id}]
+
++ Parameters
+    + status: `restore` (string, required) - product status
+        + Members
+            + archive
+            + cancel
+            + unarchive
+            + restore
+    + external_id: `888RED` (string, required) - product external id
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            'success': true
+        }
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404,
+            message: 'Product not found'
+        }
+
+
+## Replenishment Collection [/api/v3.0/replenishments]
+
+APIs for managing your Replenishments.
+
+**IMPORTANT** You _must_ use the `PUT - /api/inventory/flags` API endpoint to update your filters if you manage your inventory through these replenishment endpoints.
+
+More information about that route can be found in our v1.0 API docs.
+
+### List All Replenishments [GET /api/v3.0/warehouses/skus/replenishments{?sku_id,__rollup,__populate,__company}]
+
++ Parameters
+    + sku_id: `58beec6230c543013d31ef5c` (string, required) - SKU ID (can be added multiple times)
+    + __rollup: `true` (boolean, optional) - Roll past dates into one "Available to Sell" replenishment
+        + Default: `false`
+    + `\_\_populate`: `\_\_available` (enum, optional) - Populate options.
+        `__available` will include available inventory calculation
+        + Members
+            + __available
+    + __company: `58bf12ef30c543013d31ef5d` (string, optional) - Company ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (array[Replenishment])
+
+### List Replenishments by Warehouse [GET /api/v3.0/warehouse/{warehouse_id}/skus/replenishments{?sku_id,__rollup,__populate,__company}]
+
++ Parameters
+    + warehouse_id: `58bdda1730c543013d31ef56` (string) - Warehouse ID
+    + sku_id: `58beec6230c543013d31ef5c` (string, required) - SKU ID (can be added multiple times)
+    + __rollup: `true` (boolean, optional) - Roll past dates into one "Available to Sell" replenishment
+        + Default: `false`
+    + `\_\_populate`: `\_\_available` (enum, optional) - Populate options.
+        `__available` will include available inventory calculation
+        + Members
+            + __available
+    + __company: `58bf12ef30c543013d31ef5d` (string, optional) - Company ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (array[Replenishment])
+
+### List Replenishments by Warehouse and SKU [GET /api/v3.0/warehouse/{warehouse_id}/sku/{sku_id}/replenishments{?__rollup,__populate,__company}]
+
++ Parameters
+    + warehouse_id: `58bdda1730c543013d31ef56` (string) - Warehouse ID
+    + sku_id: `58beec6230c543013d31ef5c` (string, required) - SKU ID (can be added multiple times)
+    + __rollup: `true` (boolean, optional) - Roll past dates into one "Available to Sell" replenishment
+        + Default: `false`
+    + `\_\_populate`: `\_\_available` (enum, optional) - Populate options.
+        `__available` will include available inventory calculation
+        + Members
+            + __available
+    + __company: `58bf12ef30c543013d31ef5d` (string, optional) - Company ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (array[Replenishment])
+
+### Create Replenishment [POST /api/v3.0/warehouse/{warehouse_id}/sku/{sku_id}/replenishments]
+
++ Parameters
+    + warehouse_id (string) - Warehouse ID
+    + sku_id (string) - SKU ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+
+            {
+                warehouse_id: '58beec5330c543013d31ef5b',
+                sku_id: '58beec6230c543013d31ef5c',
+                display_name: 'Prebook',
+                prebook: true,
+                period_start: '3/1/2017',
+                period_end: '3/31/2017',
+                quantity: null,
+                active: true
+            }
+
++ Response 201 (application/json)
+    + Attributes (Replenishment)
+
++ Response 400 (application/json)
+
+        {
+            message: 'Error message with what field(s) need to be corrected',
+            args: {
+                /* fields that need to be corrected */
+            }
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage replenishments'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Warehouse / SKU not found'
+        }
+
+### Bulk Create Replenishments [POST /api/v3.0/warehouse/{warehouse_id}/replenishments]
+
++ Parameters
+    + warehouse_id (string) - Warehouse ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+
+            {
+                replenishments: [
+                    {
+                        warehouse_id: '58beec5330c543013d31ef5b',
+                        sku_id: '58beec6230c543013d31ef5c',
+                        display_name: 'Prebook',
+                        prebook: true,
+                        period_start: '3/1/2017',
+                        period_end: '3/31/2017',
+                        quantity: null,
+                        active: true
+                    }
+                ]
+            }
+
++ Response 201 (application/json)
+    + Attributes (array[Replenishment])
+
++ Response 400 (application/json)
+
+        {
+            message: 'Error message with what field(s) need to be corrected',
+            args: {
+                /* fields that need to be corrected */
+            }
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage replenishments'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Warehouse / SKU not found'
+        }
+
+### Replace Replenishments [PUT /api/v3.0/warehouse/{warehouse_id}/replenishments]
+
+Upserts replenishments if a match is found, otherwise it creates a new replenishment.
+
++ Parameters
+    + warehouse_id (string) - Warehouse ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+
+            {
+                replenishments: [
+                    {
+                        warehouse_id: '58beec5330c543013d31ef5b',
+                        sku_id: '58beec6230c543013d31ef5c',
+                        display_name: 'Prebook',
+                        prebook: true,
+                        period_start: '3/1/2017',
+                        period_end: '3/31/2017',
+                        quantity: null,
+                        active: true
+                    }
+                ]
+            }
+
++ Response 201 (application/json)
+    + Attributes (array[Replenishment])
+
++ Response 400 (application/json)
+
+        {
+            message: 'Error message with what field(s) need to be corrected',
+            args: {
+                /* fields that need to be corrected */
+            }
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage replenishments'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Warehouse / SKU not found'
+        }
+
+### Delete a Replenishment [DELETE /api/v3.0/warehouse/{warehouse_id}/sku/{sku_id}/replenishment/{replenishment_id}]
+
++ Parameters
+    + warehouse_id (string) - Warehouse ID
+    + sku_id (string) - SKU ID
+    + replenishment_id (string) - Replenishment ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            id: '58beeb1230c543013d31ef5a',
+            warehouse_id: '58beec5330c543013d31ef5b',
+            sku_id: '58beec6230c543013d31ef5c',
+            success: true
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage replenishments'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Warehouse, SKU or Replenishment not found'
+        }
+
+### Delete Replenishments by Warehouse and SKU [DELETE /api/v3.0/warehouse/{warehouse_id}/sku/{sku_id}/replenishments]
+
++ Parameters
+    + warehouse_id (string) - Warehouse ID
+    + sku_id (string) - SKU ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            warehouse_id: '58beec5330c543013d31ef5b',
+            sku_id: '58beec6230c543013d31ef5c',
+            success: true
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage replenishments'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Warehouse, SKU not found'
+        }
+
+### Delete All Replenishments by Warehouse [DELETE /api/v3.0/warehouse/{warehouse_id}/replenishments]
+
++ Parameters
+    + warehouse_id (string) - Warehouse ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            warehouse_id: '58beec5330c543013d31ef5b',
+            success: true
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage replenishments'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Warehouse not found'
+        }
+
+
+## Schema Collection [/api/schema/]
+
+APIs for managing your Schemas.
+
+### Get All Schemas [GET /api/schemas]
+
++ Request
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (array[Schema])
+
+### Get Schema by Type [GET /api/schemas/{type}]
+
++ Parameters
+    + type: `order` (enum, required) - schema type
+        + Members
+            + company
+            + order
+            + product
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (Schema)
+
+### Get Schema by ID [GET /api/schema/{id}]
+
++ Parameters
+    + id: `59f0be6f949776162469a73e` (string, required) - schema ID
+
++ Request (application/json)
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+    + Attributes (Schema)
+
+
+
+## Shipment Collection [/api/order/shipments]
+
+APIs for managing your Shipments.
+
+### Create by Order ID [PUT /api/order/{id}/shipment]
+
++ Parameters
+    + id: `59e4fad8cddc5c50bffa4189` (string, required) - Order ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Shipment)
+
++ Response 201 (application/json)
+    + Attributes (ShipmentResponse)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Error message with what field(s) need to be corrected',
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 403 (application/json)
+
+        {
+            code: 403
+            message: 'You do not have permission to create shipments'
+        }
+
+
+### Create by Order Number [PUT /api/order/number/{number}/shipment]
+
++ Parameters
+    + number: `19985624` (string, required) - Order number
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Shipment)
+
++ Response 201 (application/json)
+
+    + Attributes (ShipmentResponse)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Error message with what field(s) need to be corrected',
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 403 (application/json)
+
+        {
+            code: 403
+            message: 'You do not have permission to create shipments'
+        }
+
+
+
+### Update by Order ID and Shipment ID [POST /api/order/{id}/shipment/{shipmentId}]
+
++ Parameters
+    + id: `59e4fad8cddc5c50bffa4189` (string, required) - Order ID
+    + shipmentId: `59e4fb09cddc5c50bffa418a` (string, required) - Shipment ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Shipment)
+
++ Response 200 (application/json)
+
+    + Attributes (ShipmentResponse)
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Error message with what field(s) need to be corrected',
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 403 (application/json)
+
+        {
+            code: 403
+            message: 'You do not have permission to create shipments'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404
+            message: 'Order or shipment not found'
+        }
+
+### Update by Order Number and Shipment ID [POST /api/order/number/{id}/shipment/{shipmentId}]
+
++ Parameters
+    + id: `59e4fad8cddc5c50bffa4189` (string, required) - Order ID
+    + shipmentId: `59e4fb09cddc5c50bffa418a` (string, required) - Shipment ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Shipment)
+
++ Response 200 (application/json)
+    + Attributes (ShipmentResponse)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Error message with what field(s) need to be corrected',
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 403 (application/json)
+
+        {
+            code: 403
+            message: 'You do not have permission to create shipments'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404
+            message: 'Order or shipment not found'
+        }
+
+
+
+### Update Shipment by Tracking Number and Order ID [POST /api/order/{id}/shipment/tracking/{tracking_number}]
+
++ Parameters
+    + id: `59e4fad8cddc5c50bffa4189` (string, required) - Order ID
+    + tracking_number: `1Z0000000001` (string, required) - Tracking number
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Shipment)
+
++ Response 200 (application/json)
+    + Attributes (ShipmentResponse)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Error message with what field(s) need to be corrected',
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 403 (application/json)
+
+        {
+            code: 403
+            message: 'You do not have permission to create shipments'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404
+            message: 'Order or shipment not found'
+        }
+
+
+
+
+### Update Shipment by Tracking Number and Order Number [POST /api/order/number/{number}/shipment/tracking/{tracking_number}]
+
++ Parameters
+    + number: `19985624` (string, required) - Order number
+    + tracking_number: `1Z0000000001` (string, required) - Tracking number
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+    + Attributes (Shipment)
+
++ Response 200 (application/json)
+    + Attributes (ShipmentResponse)
+
+
++ Response 400 (application/json)
+
+        {
+            code: 400,
+            message: 'Error message with what field(s) need to be corrected',
+        }
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
++ Response 403 (application/json)
+
+        {
+            code: 403
+            message: 'You do not have permission to create shipments'
+        }
+
++ Response 404 (application/json)
+
+        {
+            code: 404
+            message: 'Order or shipment not found'
+        }
+
+
+
+### Delete Shipment by Order ID and Shipment ID [DELETE /api/order/{id}/shipment/{shipment_id}]
+
++ Parameters
+    + id: `59e4fad8cddc5c50bffa4189` (string, required) - Order ID
+    + shipment_id: `59e4fad8cddc5c50bffa4188` (string, required) - shipment ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            'success': true
+        }
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+### Delete Shipment by Order ID and Tracking Number [DELETE /api/order/{id}/shipment/tracking/{tracking_number}]
+
++ Parameters
+    + id: `59e4fad8cddc5c50bffa4189` (string, required) - Order ID
+    + tracking_number: `1Z0000000001` (string, required) - Tracking number
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            'success': true
+        }
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+### Delete Shipment by Order Number and Shipment ID [DELETE /api/order/number/{number}/shipment/{shipment_id}]
+
++ Parameters
+    + number: `19985624` (string, required) - Order number
+    + shipment_id: `59e4fad8cddc5c50bffa4188` (string, required) - shipment ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            'success': true
+        }
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+
+
+### Delete Shipment by Order Number and Tracking Number [DELETE /api/order/number/{number}/shipment/tracking/{tracking_number}]
+
++ Parameters
+    + number: `19985624` (string, required) - Order number
+    + tracking_number: `1Z0000000001` (string, required) - Tracking number
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            'success': true
+        }
+
+
++ Response 401 (application/json)
+
+        {
+            code: 401,
+            message: 'Invalid permissions'
+        }
+
+## Warehouse Collection [/api/v3.0/warehouses]
+
+APIs for managing your Warehouses.
+
+### List All Warehouses [GET /api/v3.0/warehouses{?__company,sku_id,display_name,code}]
+
++ Parameters
+    + sku_id: `58beec6230c543013d31ef5c` (string, optional) - SKU ID
+    + display_name: `Warehouse Name` (string, optional) - Warehouse Name
+    + code: `001` (string, optional) - Warehouse Code
+    + __company: `58bf12ef30c543013d31ef5d` (string, optional) - Company ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+    + Attributes (array[Warehouse])
+
+### Create a Warehouse [POST]
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+
+            {
+                display_name: 'Warehouse Name',
+                code: '001',
+                sort: 1
+                allows_overselling: false,
+            }
+
++ Response 201 (application/json)
+    + Attributes (Warehouse)
+
++ Response 400 (application/json)
+
+        {
+            message: 'Error message with what field(s) need to be corrected',
+            args: {
+                /* fields that need to be corrected */
+            }
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage warehouses'
+        }
+
++ Response 409 (application/json)
+
+        {
+            message: 'Warehouse already exists',
+            args: {
+                display_name: 'Conflicting Warehouse',
+                code: '001'
+            }
+        }
+
+### Update a Warehouse [PATCH /api/v3.0/warehouse/{id}]
+
++ Parameters
+    + id: `58beec5330c543013d31ef5b` (string) - Warehouse ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+
+            {
+                display_name: 'Main Warehouse',
+                code: '001',
+                sort: 1,
+                active: true
+            }
+
++ Request Partial Example (application/json)
+
+    This is a `PATCH` endpoint, so you need only send what changed.
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
+    + Body
+
+            {
+                display_name: 'New Warehouse Name'
+            }
+
++ Response 200 (application/json)
+    + Attributes (Warehouse)
+
++ Response 400 (application/json)
+
+        {
+            message: 'Error message with what field(s) need to be corrected',
+            args: {
+                /* fields that need to be corrected */
+            }
+        }
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage warehouses'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Warehouse not found',
+            {
+                id: '58bdda1730c543013d31ef60'
+            }
+        }
+
+### Delete a Warehouse [DELETE /api/v3.0/warehouse/{id}]
+
++ Parameters
+    + id (string) - Warehouse ID
+
++ Request (application/json)
+
+    + Headers
+
+        Authorization: OAuth 1.0 Authorization Header
+
++ Response 200 (application/json)
+
+        {
+            id: '58bdda1730c543013d31ef56',
+            success: true
+        }
+
++ Response 304 (application/json)
+
++ Response 403 (application/json)
+
+        {
+            message: 'You do not have permission to manage warehouses'
+        }
+
++ Response 404 (application/json)
+
+        {
+            message: 'Warehouse not found',
+            {
+                id: '58bdda1730c543013d31ef60'
+            }
+        }
+
+
+# Data Structures
+
+## OrderAddress (object)
+
++ code: `123` (string) - The Address ID
++ line_1: `444 Testing Lane` (string) - The Address Line 1
++ line_2: `Suite C` (string) - The Address Line 2
++ city: `Atlanta` (string) - The Address City
++ state: `GA` (string) - The Address State
++ zip: `30345` (string) - The Address Zip
++ country: `US` (string) - The Address Country
+
+## OrderRetailer (object)
+
++ retailer_code: `777777` (string, required) - The customer code
++ buyer_email: `buyer@brand.com` (string, required) - The buyer email (must exist in NuORDER)
+
+## OrderLine (object)
+
++ brand_id: `888RED` (string) - External ID of the product
++ season: `Core` (string) - Product season
++ style_number: `888` (string) - Product style number
++ color: `Red` (string) - Product color
++ discount: `0` (number) - Line level % discount (0 - 100),
++ ship_start: `2017/10/01` (string, required) - Order Ship Start,
++ ship_end: `2017/10/31` (string, required) - Order Ship End,
++ notes: `A note at the line level` (string) - Order note
++ warehouse: `100` (string) - Warehouse reference (code)
++ sizes: (array[OrderLineSize]) - Size objects
++ prebook: `false` (boolean) - Whether line item is pre-booked
+
+## OrderLineSize (object)
+
++ size: `Small` (string) - Size name
++ upc: `123456789` (string) - Size UPC
++ quantity: `10` (number, required) - Quantity
++ price: `25.00` (number, required) - Price
++ original_price: `29.00` (number) - Original Price (with no discount)
+
+## OrderShipmentLineSize (object)
+
++ size: `Small` (string, required) - shipment size
++ quantity: `10` (number, required) - shipment quantity
+
+## OrderShipmentLine (object)
+
++ brand_id: `888RED` (string) - External ID of the product
++ season: `Core` (string) - Product season
++ style_number: `888` (string) - Product style number
++ color: `Red` (string) - Product color
++ sizes: array[OrderShipmentLineSize] - Size objects
+
+## OrderShipment (object)
+
++ type: `fedex` (string) - Shipping type
++ tracking_numbers: `1Z0000000001` (array[string]) - Shipping tracking numbers
++ line_items: (array[OrderShipmentLine]) - Shipment lines
+
+## OrderRequest (object)
++ order_number: `12345` (string, required) - The Order Number,
++ external_id: `888888` (string, required) - External Order Number (from your system),
++ customer_po_number: `po_number` (string) - Customer's PO Number,
++ currency_code: `USD` (string, required) - Currency Code,
++ status: `approved` (string) - Order Status (NuORDER, read-only field),
++ discount: `0` (number) - Discount % (0 - 100),
++ ship_start: `2017/10/01` (string, required) - Order Ship Start,
++ ship_end: `2017/10/31` (string, required) - Order Ship End,
++ rep_code: `555` (string) - Sales rep code,
++ rep_email: `testrep@nuorder.com` (string) - Sales rep email,
++ notes: `A note at the order level` (string) - Order note
++ billing_address (OrderAddress) - Billing address
++ shipping_address (OrderAddress) - Shipping address
++ retailer (OrderRetailer) - Retailer information
++ line_items: (array[OrderLine], required) - Line items
++ total: `100` (number) - Order total
+
+## Order (OrderRequest)
++ shipments: (array[OrderShipment]) - NuORDER shipments (read-only)
+
+## ShipmentLineSize (object)
+
++ size: `Small` (string, required) - shipment size
++ quantity: `10` (number, required) - shipment quantity
+
+## ShipmentLine (object)
+
++ brand_id: `888RED` (string) - External ID of the product
++ season: `Core` (string) - Product season
++ style_number: `888` (string) - Product style number
++ color: `Red` (string) - Product color
++ sizes: (array[ShipmentLineSize]) - Size objects
+
+## Shipment (object)
+
++ type: `fedex` (string) - Shipping type
++ tracking_numbers: `1Z0000000001` (array[string]) - Shipping tracking numbers
++ line_items: (array[ShipmentLine]) - Shipment lines
++ suppress_emails: `false` (boolean) - Explicitly suppress shipment email
+
+## ShipmentLineResponse (object)
++ product: `59958be4ffb5c600017a05cc` (string) - product id
++ sizes: (array[ShipmentLineSize]) - shipments sizes
+
+## ShipmentResponse (object)
++ status: `fulfilled` (enum) - Shipment status
+    + Members
+        + ready_to_ship
+
++ created_by: `NuORDER API` (string) - creator name
++ line_items: (array[ShipmentLineResponse]) - Shipment lines
++ shipment_info: - shipment info
+    + type: `fedex` (string) - shipment type
+    + tracking_numbers: `1Z0000000001` (array[string]) - Shipping tracking numbers
+
+## Product (object)
++ style_number: `A396` (string, required) - product style number
++ season: `spring/summer` (string, required) - product season
++ color: `all black` (string, required) - product color
++ name: `test` (string, required) - product name
++ brand_id: `172ak061712-001` (string) - product external identificator
++ unique_key: `A396,spring/summer,all black` (string) - Product unique key
++ schema_id: `537bcbd716af5274043a0992` (string) - product schema id
++ sizes: (array[ProductSize]) - product sizes
++ banners: `[583f5196675ef9ac78c1628d]` (array[string]) - order banners
++ size_groups: `[ group1, group2, group3 ]` (array[string]) - size groups
++ available_now: `false` (boolean) - whether product is available now
++ images: `[599611906873730001745011]` (array[string]) - product images
++ cancelled: `false` (boolean) - whether product was cancelled
++ archived: `false` (boolean) - whether product was archived
++ active: `true` (boolean) - whether product is active,
++ description: `awesome product` (string) - product description
++ available_from: `2017/08/30` (string) - date available from
++ available_until: `2019/08/30` (string) - date available until
++ order_closing: `2017-09-12 00:00:00.000Z` (string) - date order closing
++ pricing: (ProductPrice) - product pricing
++ seasons: `[spring, summer, 2018]` (array[string]) - product additional seasons
+
+## ProductResponse (Product)
++ _id: `599611906873730001745011` (string) - product ID
++ __size_ids: `[599611906873730001745011]` (array[string]) - size ids array
++ modified_on: `2017-09-11T22:30:04.911Z` (string) - last modified date
++ __inventory_cache: (array[ProductInventoryCache]) - inventory cached data
++ __inventory: `[default]` (array[string]) - inventory names
+
+## ProductInventoryCache (object)
++ bucket: `2018/07/25` (string) - bucket name,
++ warehouse: `537bcbd716af5274043a09be` (string) - warehouse ID,
++ sku_id: `59958be4ffb5c600017a05cb` (string) - sku ID
++ _id: `59b70e6a01c70700012dbdb8` (string) - inventory cache id
++ quantity: `72` (number) - quantity amount
+
+## ProductSize (object)
++ size: `OS` (string) - size name
++ size_group: `A1` (string) - size group
++ pricing: (ProductPrice) - size prices in available currencies
+
+## ProductPrice (object)
++ USD
+    + wholesale: `10` (number, required) - wholesale price
+    + retail: `12.1` (number) - retail price
+    + disabled: `false` (boolean) - whether price is disabled
+
+## ProductListResponse (object)
++ value: `black` (string) - value that was used for grouping
++ products: (array[Product]) - list of product
+
+## Pricesheet (object)
++ wholesale: `1.2` (number) - wholesale price
++ retail: `0` (number) - retailer price
++ disabled: `false` (boolean) - whether pricesheet is disabled
++ sizes: (array[PricesheetSizeItem]) - pricesheet sizes
++ template: `A23N` (string, required) - pricesheet template name
++ style_number: `A11N` (string) - product style number
++ season: `summer` (string) - product season
++ color: `green` (string) - product color
+
+## PricesheetRequest (Pricesheet)
++ _id: `5996118f6873730001744fff` (string) - product id
++ brand_id: `A486` (string) - product brand id
+
+## PricesheetItemResponse (Pricesheet)
++ product: `5728def1ab19c9017f5f585c` (string) - product id
+
+## PricesheetSizeItem (object)
++ _id: `59d436ce105813000150505f` (string) - Size item id
++ wholesale: `1` (string) - wholesale size price
++ retail: `0` (string) - wholesale inventory price
++ size: `small` - size name
+
+## Company (object)
++ name: `Beauty Poet` (string, required) - company name
++ code: `950661308` (string) - compnay code
++ reps: (array[SalesRep]) - Sales Reps
++ addresses: (array[CompanyAddress])  - company addresses
++ allow_bulk: `false` (boolean) - whether company allowed to send bulk orders
++ surcharge: `0` (number) - company's surcharge
++ discount: `0` (number) - company's discount
++ customer_groups: `56e9f7cb307b958202051c23`,`premium` (array[string]) - company groups
++ currency_code: `USD` (string, required) - company currency code
++ active: `true` (boolean) - whether company is active
++ payment_terms: `Net 30` (string) - company's payment terms
++ credit_status: `S` (string) - company's credit status
++ buyers: (array[Buyer]) - buyers of the company
++ warehouse: `5553913f834dc25c6469e1d8` (string) - warehouse name or ID
+
+## CompanyResponse (Company)
++ _id: `59af25379042bd00013b7996` (string) - company ID
++ __sortable_name: `beauty poet` (string) - sortable name
++ schema_id: `537bcbd716af5274043a0993` (string) - company schema ID
++ reps: (array[SalesRep]) - Sales Reps
++ user_connections: (array[Buyer]) - company users
++ __connected_brand_users: `[537b8fb62585fcd3447e7a4d]` (array[string]) - IDs of connected brand users
++ __filter_key: `[test]` (array[string]) - filter keys
++ __search_key: `[beuty,poet,950661308]` (array[string]) - keys that company could be found by
++ created_on: `2017-09-05T22:29:11.987Z` (string) - date company was created
++ default_discount: `0` (number) - alias of company's discount
++ default_surcharge: `0` (number) - alias of company's surcharge
++ pricing_template: `Wholesale USD` (string) - pricesheet assigned to a company
+
+
+## CompanyAddress (object)
++ display_name: `Beauty Poet- San Luis Obispo` (string) - address name
++ line_1: `1920 Broad Street` (string) - line 1
++ city: `San Luis Obispo` (string) - City
++ state: `CA` (string) - State code
++ zip: `93401` (string) - zip code
++ shipping_code: `997816352` (string) - shipping code
++ billing_code: `997816352` (string) - billing code
++ type: `both` (enum) - address type: billing, shipping or both
+    + Members
+        + billing
+        + shipping
++ country: `United States` - country
+
+## BuyerFormatted (object)
++ name: `Mike Johnson` (string) - user name
++ email: `test@nuorder.com` (string) - user email
++ reps: `[sales@rep.nuorder.com]` (array[string]) - Sales Rep emails
++ title: `Head Buyer` (string) - user title
++ phone_office: `(310) 555-1212` (string) - user phone office
++ phone_cell: `(310) 555-1212` (string) - user phone cell
+
+## Buyer (BuyerFormatted)
++ _id: `574e15f83c92227914b0185b` (string) - company's user internal ID
++ ref: `537b901f2585fcd3447e7ba9` (string) - user ID
++ linesheets: (array[string]) - user's linesheets
++ last_viewed: `2017-02-01T07:13:04.083Z` - last viewed date
++ reps: (array[SalesRep]) - Sales Rep info
+
+## SalesRepShort (object)
++ name: `Sales Rep` (string) - Sales Rep name
++ email: `Sales.Rep@nuorder.com` (string) - Sales Rep Email
+
+## SalesRep (SalesRepShort)
++ ref: `537b8fb62585fcd3447e7a4d` (string) - Sales Rep ID
++ _id: `574e15f83c92227914b0185c` (string) - Sales Ref internal ID
+
+## SchemaFieldDetails (object)
++ type: `single` (enum) - field type
+    + Members
+        + multi
+
++ subtype: `string` (enum) - field subtype
+    + Members
+        + long string
+        + number
+        + boolean
+        + date
+        + lookup
++ allowed_values: (array[string]) - allowed values
++ formatters: (array[enum]) - formatters
+    + Members
+        + lowercase
+        + uppsercase
++ lookup: '' (string) - look up value (only present if subtype is `lookup`)
+
+## SchemaField (object)
++ _id: `59f0be6f949776162469a73e` (string) - schema field ID
++ key: `some_prop` (string) - schema property key
++ name: `Some Prop` (string) - schema property name
++ unique: `false` (boolean) - schema field is unique
++ dispaly: `true` (boolean) - schema field should display
++ display_to_buyers: `true` (boolean) - schema field should display to buyers
++ filterable: `true` (boolean) - schema field is filterable
++ searchable: `true` (boolean) - schema field is searchable
++ required: `true` (boolean) - schema field is required
++ details: (SchemaFieldDetails) - schema field details
+
+## Schema (object)
++ _id: `537bcbd716af5274043a0992` (string) - schema ID
++ active: `true` (boolean) - active state
++ brand: `59f0bdc4949776162469a73d` - brand ID
++ composite_key_fields: (array[string]) - unique composite key for entity
++ name: `Order Schema` (string) - schema name
++ type: `order` (enum) - schema type
+    + Members
+        + company
+        + product
++ fields: (array[SchemaField]) - schema fields
+
+## InventoryWipSize (object)
++ size: `small` (string) - size (must provide either `size` or `upc`)
++ upc: `123456789` (string) - upc (must provide either `size` or `upc`)
++ quantity: `10` (number) - quantity
+
+## InventoryWip (object)
++ name: `2018/10/01` (string) - wip name (can be a date YYYY/MM/DD, `immediate` or `prebook`)
++ sizes: (array[InventoryWipSize]) - wip sizes
+
+## Inventory (object)
++ warehouse: `Main` (string) - warehouse code
++ prebook: `false` (boolean) - prebook
++ wip: (array[InventoryWip]) - work in progress (wip) inventory entries
+
+## InventoryWrapper (object)
++ inventory: (array[Inventory]) - inventory data
+
+## InventoryGroupingProductResponse (object)
++ _id: `59f0cf8e949776162469a740` (string) - product ID
++ brand_id: `5555` (string) - product external ID
++ inventory: (InventoryWrapper) - inventory data
+
+## InventoryGroupingResponse (object)
++ group: `season` (string) - product group
++ value: `fall` (string) - product group value
++ products: (array[InventoryGroupingProductResponse]) - product inventory data
+
+## InventoryFlagsRequest (object)
++ product_ids: `5aa7d76dfa217edddeaab159` (array[string]) - product IDs (max 25)
+
+## PaymentAuthorize (object)
++ transaction_client_token_ref: `d131dd02c5e6eec4` (string, required) - client unique transaction identifier
++ client_invoice_ref: `INV100` (string) - client invoice number
++ nuorder_payment_account_id: `5aff1f0ffd7a29cb53421390` (string) - payment account ID
++ nuorder_card_id: `5aabd0fafa217edddeaab15b` (string, required) - credit card ID
++ amount: `100.00` (number, required) - transaction amount
++ currency_code: `USD` (string, required) - transaction currency code
++ description: `Authorize for $100.00` (string, required) - transaction description
+
+## PaymentCharge (object)
++ transaction_client_token_ref: `d131dd02c5e6eec4` (string, required) - client unique transaction identifier
++ client_invoice_ref: `INV100` (string) - client invoice number
++ nuorder_payment_account_id: `5aff1f0ffd7a29cb53421390` (string) - payment account ID
++ nuorder_card_id: `5aabd0fafa217edddeaab15b` (string, required) - credit card ID
++ amount: `100.00` (number, required) - transaction amount
++ currency_code: `USD` (string, required) - transaction currency code
++ description: `Charge for $100.00` (string, required) - transaction description
+
+## PaymentCapture (object)
++ transaction_client_token_ref: `d131dd02c5e6eec4` (string, required) - client unique transaction identifier
++ client_invoice_ref: `INV100` (string) - client invoice number
++ amount: `100.00` (number, required) - transaction amount
++ currency_code: `USD` (string, required) - transaction currency code
++ description: `Capture for $100.00` (string, required) - transaction description
+
+## PaymentRefund (object)
++ transaction_client_token_ref: `d131dd02c5e6eec4` (string, required) - client unique transaction identifier
++ client_invoice_ref: `INV100` (string) - client invoice number
++ amount: `100.00` (number, required) - transaction amount
++ currency_code: `USD` (string, required) - transaction currency code
++ description: `Refund for $100.00` (string, required) - transaction description
+
+## PaymentGroup (object)
++ _id: `5aabd8bff303cd00012e6af5` (string) - payment group ID
++ payment_group_number: `135555` (number) - payment group number
++ brand: `5aabd936fa217edddeaab165` (string) - brand ID
++ order_group_id: `5aabd94bfa217edddeaab168` (string) - order group ID
++ company: `5aabd9fbfa217edddeaab16c` (string) - company ID
++ created_by: `5aabda08fa217edddeaab172` (string) - created by user ID
++ active: `true` (boolean) - payment group active status
++ currency_code: `USD` (string) - payment group currency code
++ status: `open` (enum) - status
+    + Members
+        + closed
++ subtotal: `100` (number) - subtotal
++ total_balance: `100` (number) - total balance
++ balance_pending: `0` (number) - balance pending
++ balance_paid: `0` (number) - balance paid
++ transactions: (array[Transaction]) - transactions
++ shipping_charges: (array[PaymentGroupShippingCharge]) - shipping charges
++ created_on: `2018-01-01T00:00:00.000Z` (string) - date payment group was created
++ modified_on: `2018-01-01T00:00:00.000Z` (string) - date payment group was last modified
+
+## PaymentGroupShippingCharge (object)
++ _id: `5aabdaeafa217edddeaab177` (string) - payment group shipping charge ID
++ amount: `5.00` (number) - payment group shipping charge amount
++ created_on: `2018-01-01T00:00:00.000Z` (string) - date payment group shipping charge was created
+
+## Transaction (object)
++ _id: `5aabe18dfa217edddeaab17d` (string) - transaction ID
++ transaction_client_token_ref: `d131dd02c5e6eec4` (string) - client transaction token ref
++ client_invoice_ref: `INV100` (string) - client invoice number
++ payment_method: `cc` (enum) - payment method
++ description: `transaction description` (string) - transaction description
++ status: `authorized` (string) - status
++ authorized_amount: `100.00` (number) - authorized amount
++ amount: `100.00` (number) - amount
++ currency_code: `USD` (string) - currency code
++ cc: `5aabe218fa217edddeaab183` (string) - card ID
++ card_type: `visa` (string) - card type
++ last_four: `1111` (string) - card last 4 digits
++ detail: (TransactionDetail) - transaction details
++ created_on: `2018-01-01T00:00:00.000Z` (string) - date transaction was created
++ modified_on: `2018-01-01T00:00:00.000Z` (string) - date transaction was last modified
+
+## TransactionDetail (object)
++ response: `{"id":"1234","status":"resolved","amount":100}` (string) - JSON response from gateway
++ ext_transaction_id: `W4kerqJarQtuMPEK87gPuVsX` (string) - external transaction ID
++ gateway_transaction_id: `555` (string) - gateway transaction ID
++ reject_code: `400` (string) - reject code
++ reference_id: `5abba1f4713e9d01c39136e3` (string) - reference id
+
+## Warehouse (object)
+
++ id: `58bdda1730c543013d31ef56` (string) - The Warehouse ID (24 character hex string)
++ brand_id: `58bdddf430c543013d31ef59` (string) - The Brand's ID (24 character hex string)
++ display_name: `Warehouse Name` (string, required) - The warehouse name
++ created_on: `148890683000` (number) - Milliseconds since epoch
++ modified_on: `148890683000` (number) - Milliseconds since epoch
++ code: `001` (string) - The warehouse code (typically the code in your system)
++ sort: 1 (number) - Sort order the warehouse should show
++ active: true (boolean)
+
+## Replenishment (object)
+
++ id: `58beeb1230c543013d31ef5a` (string) - The Replenishment ID (24 character hex string)
++ warehouse_id: `58beec5330c543013d31ef5b` (string) - The Warehouse ID (24 character hex string)
++ sku_id: `58beec6230c543013d31ef5c` (string) - The SKU ID (24 character hex string)
++ created_on: `148890683000` (number) - Milliseconds since epoch
++ modified_on: `148890683000` (number) - Milliseconds since epoch
++ display_name: `Replenishment Name` (string) - The replenishment name
++ prebook: `false` (boolean) - Is this replenishment prebook
++ period_start: `1488326400000` (number) - Replenishment start date
++ period_end: `1490918400000` (number) - Replenishment end date
++ quantity: `100` (number) - The quantity available for this replenishment (required if `prebook` = `false`)
++ active: true (boolean)
+
+## Working Order Export Format (object)
+
++ id: `593fee488f113256c806ac5c` (string) - The Working Order Export Format ID (24 character hex string)
++ brand_id: `593feea28f113256c806ac5d` (string) - The Brand's ID (24 character hex string)
++ name: `Main Export` (string, required) - The export name
++ active: `true` (boolean) - Is the export active
++ default_format: `true` (boolean) - Is the export the default
++ size_format: `horizontal_in_header` - The size format (enum)
++ include_images: `false` (boolean) - Should the export include product imagery
++ created_on: `149736171500` (number) - Milliseconds since epoch
++ modified_on: `149736171500` (number) - Milliseconds since epoch
+
+## Working Order Export Format Fields (object)
+
++ id: `593fefa98f113256c806ac5e` (string) - The Working Order Export Format Field ID (24 character hex string)
++ format_id: `593fee488f113256c806ac5c` (string) - The Working Order Export Format ID (24 character hex string)
++ type: `line_item` (string, required) - The type of field (line_item or summary)
++ header: `Style` (string, required) - The column header
++ field: `style_number` (string, required) - The field to pull data from
++ sort: `1` (number, required) - The sort order relative to other columns
+
+## Working Order Export (object)
+
++ id: `593fec4a8f113256c806ac59` (string) - The Working Order Export ID (24 character hex string)
++ brand_id: `593fecf18f113256c806ac5a` (string) - The Brand's ID (24 character hex string)
++ owner_account_id: `593fed0a8f113256c806ac5b` (string) - The User's ID (24 character hex string)
++ format_id: `593fee488f113256c806ac5c` (string) - The Working Order Format ID (24 character hex string)
++ complete: `false` (boolean) - Is the export complete
++ started: `false` (boolean) - Has the export started
++ processing: `false` (boolean) - Is the export processing
++ file: `https://cdn1.nuorder.com/export/file.xlsx` (string) - URL to file
++ created_on: `149736171500` (number) - Milliseconds since epoch
++ modified_on: `149736171500` (number) - Milliseconds since epoch
+
+## CustomerGroup (object)
++ _id: `5eb4749ef8d4341f1773bae7` (string) - customer group ID
++ name: `premium` (string) - customer group name
++ type: `whitelist` (string, optional) - customer group type
++ product_filter_values: (array[ProductFilterValue]) - group filters
+
+## ProductFilterValue (object)
++ field: `season` (string) - field key in NuORDER
++ values: `core`, `fall 2018` (array[string]) - product values at given field
+
+
+## CreditCardExternalTokens (object)
++ _id: `5aabe18dfa217edddeaab17d` (string) - card ID
++ card_type: `visa` (string) - card type
++ last_four: `1111` (string) - card last 4 digits
++ external_tokens (array[ExternalToken]) - external tokens
+
+## ExternalToken
++ gateway: (CreditCardGateway) - card gateway
++ external_token: `W4kerqJarQtuMPEK87gPuVsX` (string) - credit card external token
+
+## CreditCardGateway
++ _id: `W4kerqJarQtuMPEK87gPuVsX` - gateway id
++ name: `Spreedly` (string) - gateway name
++ description: `Testing gateway` (string) - optional gateway description
++ currency_code: `USD` (string) - gateway currency
+
+## Catalog
++ id: `593fec4a8f113256c806ac59` (string) - Catalog ID (24 character hex string)
++ sync_id: `F0282267-8E9C-4CC5-BB22-A1B4B6AD88C0` (string) - Random UUID
++ brand_id: `593fec4a8f113256c806ac59` (string) - ID of a brand owning Catalog
++ created_on: `1556670722522` (number) - Creation timestamp
++ modified_on: `155667077878` (number) - Last modification timestamp
++ owner_account_id: `593fec4a8f113256c806ac59` (string) - ID of an owner
++ active: `true` (boolean) - Flag denoting is catalog active
++ archived: `false` (boolean) - Flag denoting is catalog active
++ title: (string) - Catalog's title
++ description: (string) - Catalog's description
++ cover: `81e481d94c3a9f22d65464b8e23c066e.jpg` (string) - Cover image name
++ portrait_image: `81e481d94c3a9f22d65464b8e23c066e.jpg` (string) - Portrait image name
++ default_pdf_template: `landscape_single_16` (string) - Name of a default PDF template
++ type: `landscape_single_16` (string) - Catalog type 'landscape_single_16 | custom-list'
++ restrictions: (array[DummyCatalogRestriction]) - Array of catalog's restrictions
++ sort: (number) - Sort order
++ entries: (array[DummyCatalogEntry]) - Array of of catalog's entries
++ links: (array[CatalogLink]) - Array of links to catalog
++ shares: some description
++ available_from: `1556670722522` (number) - Timestamp of when catalog is available from
++ delivery_window_start: `1556670722522` (number) - Timestamp of delivery windows start
++ delivery_window_end: `155667079999` (number) - Timestamp of delivery windows end
++ prebook: `true` (boolean) - Is catalog available for prebook
+
+## CatalogLink
++ id: `5cdeb35ef0c7ae0337a6779e` (string) - Link ID (24 character hex string)
++ catalog_id: `593fec4a8f113256c806ac59` (string) - Catalog ID (24 character hex string)
++ created_on: `1558098782447` (number) - Creation timestamp
++ label: `Some link label` (string) - A text label for a link
++ link: (string) A URL to a catalog
+
+## DummyCatalogEntry
++ type: `item` (string) - Entry type ('item | separator | image')
++ item: (ProductResponse)
++ item_id: `5a28ccf5b0aaf1000101ae55` - Product ID (24 character hex string)
++ modified_on: `155667077878` (number) - Last modification timestamp
++ notes: (string) - Notes
++ sync_id: (string) - Random `F0282267-8E9C-4CC5-BB22-A1B4B6AD88C0` (string) - Random UUID
++ created_on: `1558098782447` (number) - Creation timestamp
++ sort: `3372` (number) - Sort order
+
+## CatalogEntry
++ id: `5cdeb35ef0c7ae0337a6779e` (string) - Entry ID (24 character hex string)
++ catalog_id: `5cafcc501aedea3950cf8047`"` (string) - Catalog ID (24 character hex string)
++ type: `item` (string) - Entry type ('item | separator | image')
++ item: (ProductResponse)
++ item_id: `5a28ccf5b0aaf1000101ae55` - Product ID (24 character hex string)
++ modified_on: `155667077878` (number) - Last modification timestamp
++ notes: (string) - Notes
++ sync_id: (string) - Random `F0282267-8E9C-4CC5-BB22-A1B4B6AD88C0` (string) - Random UUID
++ created_on: `1558098782447` (number) - Creation timestamp
++ sort: `3372` (number) - Sort order
+
+## DummyCatalogRestriction
++ sync_id: `F0282267-8E9C-4CC5-BB22-A1B4B6AD88C0` (string) - Random UUID
++ field: `customer_group` (string) - Entry type ('currency_code | customer_group | subteam')
++ value: (string) - Some value for restriction
+
+## CatalogRestriction
++ id: `5cdeb35ef0c7ae0337a6779e` (string) - Entry ID (24 character hex string)
++ catalog_id: `5cafcc501aedea3950cf8047` (string) - Catalog ID (24 character hex string)
++ sync_id: `F0282267-8E9C-4CC5-BB22-A1B4B6AD88C0` (string) - Random UUID
++ field: `customer_group` (string) - Entry type ('currency_code | customer_group | subteam')
++ value: (string) - Some value for restriction
+
+## CatalogRestrictionDeleted
++ id: `5cdeb35ef0c7ae0337a6779e` (string) - Restriction ID (24 character hex string)
++ catalog_id: `5cafcc501aedea3950cf8047`"` (string) - Catalog ID (24 character hex string)
++ field: (string) - Restriction field
++ value: (string) - Restriction value
+## ColorSwatch
++ _id: `W4kerqJarQtuMPEK87gPuVsX` - internal swatch id
++ color: `red` (string) - existing product color
++ swatch_type: `hex` (enum)
+    + Members
+        + file
++ value: `dddd00` (string) - hex color value or swatch image url (`http://cdn1.nuorder.com/brand_color_swatch/11f41aac4484da0d08b8aa3bc1e3c12d.jpg`)
